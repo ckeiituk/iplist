@@ -1,9 +1,8 @@
-name: Build MRS from iplist (pages, categories, excludes, auto-bootstrap)
+name: Build & publish MRS
 
 on:
   schedule:
-    - cron: "15 */6 * * *"   # каждые 6 часов (UTC): быстрый кэшируемый прогон
-    - cron: "20 2 * * 0"     # еженедельно вс 02:20 UTC: чистая сборка без кэша
+    - cron: "15 */6 * * *"      # каждые 6 часов (UTC)
   workflow_dispatch: {}
   push:
     paths:
@@ -12,34 +11,37 @@ on:
       - ".github/workflows/build-mrs.yml"
 
 permissions:
-  contents: write   # нужно для одноразового автокоммита exclude/
-  pages: write
-  id-token: write
+  contents: write        # коммиты артефактов в репозиторий
+  pages: write           # публикация GitHub Pages
+  id-token: write        # требуется deploy-pages
 
 concurrency:
   group: build-mrs-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # версии/флаги: меняй при желании
+  MIHOMO_VERSION: v1.19.14
+  DOMAIN_WILDCARD: "0"   # 1 — оставлять только wildcard домены
+  SKIP_BOOTSTRAP: "0"    # 1 — не создавать skeleton exclude/
+
 jobs:
   build:
-    name: build (cached)
-    if: github.event_name != 'schedule' || github.event.schedule != '20 2 * * 0'
     runs-on: ubuntu-latest
     env:
-      MIHOMO_VERSION: v1.19.14
-      GOBIN:  ${{ github.workspace }}/.cache/go/bin
+      GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
-      DOMAIN_WILDCARD: "0"   # "1" → добавит &wildcard=1 к доменным выгрузкам
-      SKIP_BOOTSTRAP: "0"    # "1" → не создавать/коммитить exclude-скелет
+      COMPOSER_PROCESS_TIMEOUT: "0"
+      COMPOSER_NO_INTERACTION: "1"
+      COMPOSER_NO_AUDIT: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- одноразовый автоскелет exclude/ ----------
-      - name: Auto-bootstrap excludes (one-time)
+      # --- Bootstrap exclude/ (один раз) ---
+      - name: Bootstrap exclude/ (skeleton)
         if: env.SKIP_BOOTSTRAP != '1'
-        shell: bash
         run: |
           set -Eeuo pipefail
           need_commit=0
@@ -88,47 +90,44 @@ jobs:
             echo "exclude/ already present — nothing to bootstrap."
           fi
 
-      # ---------- PHP + Composer ----------
+      # --- PHP + Composer ---
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          tools: composer
           coverage: none
+          tools: composer
           extensions: curl, json
 
       - name: Get Composer cache dir
         id: composer-cache-dir
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
-      - name: Restore Composer cache
+      - name: Restore Composer file cache
         uses: actions/cache@v4
         with:
           path: ${{ steps.composer-cache-dir.outputs.dir }}
-          key: composer-cache-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          key: composer-cache-${{ runner.os }}
           restore-keys: |
             composer-cache-${{ runner.os }}-
 
-      - name: Restore vendor cache
+      - name: Restore vendor/
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          key: vendor-${{ runner.os }}
           restore-keys: |
             vendor-${{ runner.os }}-
 
-      - name: Install PHP deps
-        env:
-          COMPOSER_PROCESS_TIMEOUT: "0"
-          COMPOSER_NO_INTERACTION: "1"
-          COMPOSER_NO_AUDIT: "1"
+      - name: Composer install
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      # ---------- Go + mihomo ----------
+      # --- Go + mihomo ---
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23.x'
+          go-version: 1.23.x
+          cache: true
 
       - name: Restore Go bin cache (mihomo)
         uses: actions/cache@v4
@@ -144,19 +143,19 @@ jobs:
           restore-keys: |
             go-mod-${{ runner.os }}-
 
-      - name: Install mihomo (convert-ruleset)
+      - name: Install mihomo CLI
         run: |
           set -e
           echo "$GOBIN" >> $GITHUB_PATH
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
             echo "mihomo cached"
           else
-            # путь модуля — нижний регистр
+            # правильный путь модуля в нижнем регистре
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
           mihomo -v
 
-      # ---------- iplist HTTP ----------
+      # --- старт iplist ---
       - name: Start iplist HTTP server
         run: |
           php index.php > server.log 2>&1 &
@@ -176,14 +175,14 @@ jobs:
           tail -n 200 server.log || true
           exit 1
 
-      # ---------- Генерация (site, category, _all) с EXCLUDES ----------
-      - name: Generate text lists (with excludes)
-        shell: bash
+      # --- генерация списков ---
+      - name: Generate text lists
+        id: gen
         run: |
           set -Eeuo pipefail
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
 
-          # Сайты и категории
+          # Сайты и категории из config/
           declare -a SITES=()
           while IFS= read -r -d '' f; do
             category="$(basename "$(dirname "$f")")"
@@ -196,7 +195,7 @@ jobs:
             CATEGORIES+=("$(basename "$d")")
           done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
 
-          # глобальные excludes (опциональны)
+          # глобальные excludes
           mapfile -t EX_DOM_G < <(test -f exclude/domain.txt && grep -v '^\s*#' exclude/domain.txt | sed '/^\s*$/d' || true)
           mapfile -t EX_IP4_G < <(test -f exclude/ip4.txt    && grep -v '^\s*#' exclude/ip4.txt    | sed '/^\s*$/d' || true)
           mapfile -t EX_IP6_G < <(test -f exclude/ip6.txt    && grep -v '^\s*#' exclude/ip6.txt    | sed '/^\s*$/d' || true)
@@ -242,7 +241,7 @@ jobs:
               | sed 's/\r$//' | sed '/^\s*$/d'
           }
 
-          # SITE level
+          # по сайтам
           for path in "${SITES[@]}"; do
             category="${path%%/*}"
             site="${path##*/}"
@@ -250,13 +249,13 @@ jobs:
             fetch_cidr    site "$site" "$category" > "dist/mrs/ipcidr/${category}--${site}.txt" || true
           done
 
-          # CATEGORY level
+          # по категориям
           for c in "${CATEGORIES[@]}"; do
             fetch_domains group "$c" "$c" > "dist/mrs/domain/${c}.txt" || true
             fetch_cidr    group "$c" "$c" > "dist/mrs/ipcidr/${c}.txt" || true
           done
 
-          # ALL level (из категорий; без дублирования site-level)
+          # _all (агрегация категорий; без site-уровня, чтобы не дублировать)
           {
             shopt -s nullglob
             tmp="$(mktemp)"
@@ -270,16 +269,26 @@ jobs:
             [[ -s "$tmp" ]] && mv "$tmp" dist/mrs/ipcidr/_all.txt || rm -f "$tmp"
           }
 
-          echo "sites=${#SITES[@]} categories=${#CATEGORIES[@]}"
+          # краткая статистика
+          D_TXT=$(find dist/mrs/domain -type f -name '*.txt' -printf '.' | wc -c || true)
+          I_TXT=$(find dist/mrs/ipcidr -type f -name '*.txt' -printf '.' | wc -c || true)
+          echo "domain_txt=${D_TXT}" >> $GITHUB_OUTPUT
+          echo "ipcidr_txt=${I_TXT}" >> $GITHUB_OUTPUT
 
-      # ---------- Конвертация в .mrs ----------
+      - name: Sanity log (samples)
+        run: |
+          echo "::group::server.log (tail)"
+          tail -n 100 server.log || true
+          echo "::endgroup::"
+          echo "::group::list non-empty .txt"
+          find dist/mrs -type f -name '*.txt' ! -size 0 -printf '%p\n' | sed 's#^#- #' || true
+          echo "::endgroup::"
+
+      # --- конвертация в .mrs (пустые .txt просто пропускаем) ---
       - name: Convert to .mrs
-        shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
-          find dist/mrs -type f -name '*.txt' -size 0 -delete || true
-
           convert_dir() {
             local behavior="$1" dir="$2" count=0
             for f in "$dir"/*.txt; do
@@ -290,7 +299,6 @@ jobs:
             done
             echo "[summary] $behavior converted: $count files"
           }
-
           convert_dir domain dist/mrs/domain
           convert_dir ipcidr dist/mrs/ipcidr
 
@@ -299,8 +307,14 @@ jobs:
         run: |
           kill $(cat iplist.pid) || true
 
-      # ---------- GitHub Pages ----------
-      - name: Prepare Pages site
+      # --- публикуем артефакты и GitHub Pages ---
+      - name: Upload build artifacts (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrs
+          path: dist/mrs
+
+      - name: Prepare static site folder
         run: |
           set -Eeuo pipefail
           rm -rf site
@@ -319,41 +333,28 @@ jobs:
           } > site/index.html
           ( cd site && find . -type f -name '*.mrs' | sort > index.txt )
 
-      - name: Setup Pages
+      - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true   # <-- ключ к твоей ошибке “Get Pages site failed”
 
-      - name: Upload artifact for Pages
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: ./site
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
-  # --------- Weekly «clean» build без кэшей ---------
-  weekly-clean:
-    name: weekly clean (no cache)
-    if: github.event_name == 'schedule' && github.event.schedule == '20 2 * * 0'
-    runs-on: ubuntu-latest
-    env:
-      MIHOMO_VERSION: v1.19.14
-      GOBIN:  ${{ github.workspace }}/.nocache/go/bin
-      GOPATH: ${{ github.workspace }}/.nocache/go
-      DOMAIN_WILDCARD: "0"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
-        with: { php-version: '8.2', tools: composer, coverage: none }
-      - run: composer clear-cache || true
-      - run: composer install --no-interaction --prefer-dist --no-progress
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.23.x' }
-      - run: echo "$GOBIN" >> $GITHUB_PATH
-      - run: go clean -modcache || true
-      - run: go install github.com/metacubex/mihomo@${MIHOMO_VERSION} && mihomo -v
-      - run: php index.php > server.log 2>&1 & echo $! > iplist.pid
-      - run: |
-          for i in {1..60}; do curl -sf "http://127.0.0.1:8080/?format=json" && exit 0; sleep 1; done
-          echo "::error::iplist not ready"; tail -n 200 server.log || true; exit 1
-      # Ради краткости: дальше повтори шаги Generate / Convert / Pages как выше
+      - name: Commit dist/mrs to repo (optional)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/mrs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(mrs): rebuild on $(date -u +%F:%T) UTC"
+            git push
+          fi
