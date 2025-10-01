@@ -1,0 +1,66 @@
+name: Bootstrap excludes (one-click)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate exclude skeleton
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p exclude
+
+          # Глобальные списки — создаём, если их нет
+          touch exclude/domain.txt exclude/ip4.txt exclude/ip6.txt
+          for f in exclude/domain.txt exclude/ip4.txt exclude/ip6.txt; do
+            if [[ ! -s "$f" ]]; then
+              cat >"$f" <<'EOF'
+# Один элемент на строку. Пустые строки и строки, начинающиеся с #, игнорируются.
+# Для domain.txt: .example.com  или  sub.example.org
+# Для ip4.txt:    1.2.3.0/24
+# Для ip6.txt:    2001:db8::/32
+EOF
+            fi
+          done
+
+          # Категории = папки первого уровня в config/
+          mapfile -t CATS < <(find config -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+          for c in "${CATS[@]}"; do
+            mkdir -p "exclude/$c"
+            for name in domain ip4 ip6; do
+              f="exclude/$c/${name}.txt"
+              [[ -e "$f" ]] && continue
+              cat >"$f" <<'EOF'
+# Локальные исключения для категории. Формат как в глобальных списках.
+# Пример:
+# .ads.example.com
+# 10.0.0.0/8
+EOF
+            done
+          done
+
+          echo "Created/ensured exclude skeleton for categories: ${CATS[*]:-<none>}"
+
+      - name: Commit skeleton
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add exclude
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(exclude): bootstrap skeleton for global and per-category lists"
+            git push
+          fi
