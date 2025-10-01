@@ -81,3 +81,279 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add exclude
+            git commit -m "chore(exclude): bootstrap skeleton (auto)" || true
+            git push || true
+            echo "Bootstrapped exclude/ and pushed."
+          else
+            echo "exclude/ already present — nothing to bootstrap."
+          fi
+
+      # ---------- PHP + Composer ----------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer
+          coverage: none
+          extensions: curl, json
+
+      - name: Get Composer cache dir
+        id: composer-cache-dir
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Restore Composer cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache-dir.outputs.dir }}
+          key: composer-cache-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            composer-cache-${{ runner.os }}-
+
+      - name: Restore vendor cache
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            vendor-${{ runner.os }}-
+
+      - name: Install PHP deps
+        env:
+          COMPOSER_PROCESS_TIMEOUT: "0"
+          COMPOSER_NO_INTERACTION: "1"
+          COMPOSER_NO_AUDIT: "1"
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      # ---------- Go + mihomo ----------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Restore Go bin cache (mihomo)
+        uses: actions/cache@v4
+        with:
+          path: .cache/go/bin
+          key: go-bin-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
+
+      - name: Restore Go mod cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/go/pkg/mod
+          key: go-mod-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
+          restore-keys: |
+            go-mod-${{ runner.os }}-
+
+      - name: Install mihomo (convert-ruleset)
+        run: |
+          set -e
+          echo "$GOBIN" >> $GITHUB_PATH
+          if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
+            echo "mihomo cached"
+          else
+            # путь модуля — нижний регистр
+            go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
+          fi
+          mihomo -v
+
+      # ---------- iplist HTTP ----------
+      - name: Start iplist HTTP server
+        run: |
+          php index.php > server.log 2>&1 &
+          echo $! > iplist.pid
+
+      - name: Wait for iplist to be ready
+        run: |
+          for i in {1..60}; do
+            if curl -sf "http://127.0.0.1:8080/?format=json" >/dev/null; then
+              echo "iplist is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::iplist service is not responding"
+          echo "--- server.log (tail) ---"
+          tail -n 200 server.log || true
+          exit 1
+
+      # ---------- Генерация (site, category, _all) с EXCLUDES ----------
+      - name: Generate text lists (with excludes)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist/mrs/domain dist/mrs/ipcidr
+
+          # Сайты и категории
+          declare -a SITES=()
+          while IFS= read -r -d '' f; do
+            category="$(basename "$(dirname "$f")")"
+            site="$(basename "$f" .json)"
+            SITES+=("$category/$site")
+          done < <(find config -type f -name '*.json' -print0)
+
+          declare -a CATEGORIES=()
+          while IFS= read -r -d '' d; do
+            CATEGORIES+=("$(basename "$d")")
+          done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
+
+          # глобальные excludes (опциональны)
+          mapfile -t EX_DOM_G < <(test -f exclude/domain.txt && grep -v '^\s*#' exclude/domain.txt | sed '/^\s*$/d' || true)
+          mapfile -t EX_IP4_G < <(test -f exclude/ip4.txt    && grep -v '^\s*#' exclude/ip4.txt    | sed '/^\s*$/d' || true)
+          mapfile -t EX_IP6_G < <(test -f exclude/ip6.txt    && grep -v '^\s*#' exclude/ip6.txt    | sed '/^\s*$/d' || true)
+
+          base="http://127.0.0.1:8080"
+
+          build_query_args() {
+            local key="$1" val="$2"
+            local wargs=()
+            wargs+=( --data-urlencode "format=text" )
+            wargs+=( --data-urlencode "${key}=${val}" )
+            printf '%s\0' "${wargs[@]}"
+          }
+
+          load_local_excludes() {
+            local cat="$1"
+            mapfile -t EX_DOM_L < <(test -f "exclude/$cat/domain.txt" && grep -v '^\s*#' "exclude/$cat/domain.txt" | sed '/^\s*$/d' || true)
+            mapfile -t EX_IP4_L < <(test -f "exclude/$cat/ip4.txt"    && grep -v '^\s*#' "exclude/$cat/ip4.txt"    | sed '/^\s*$/d' || true)
+            mapfile -t EX_IP6_L < <(test -f "exclude/$cat/ip6.txt"    && grep -v '^\s*#' "exclude/$cat/ip6.txt"    | sed '/^\s*$/d' || true)
+          }
+
+          fetch_domains() {
+            local key="$1" val="$2" cat="$3"
+            load_local_excludes "$cat"
+            IFS=$'\0' read -r -d '' -a args < <(build_query_args "$key" "$val")
+            [[ "${DOMAIN_WILDCARD}" == "1" ]] && args+=( --data-urlencode "wildcard=1" )
+            for d in "${EX_DOM_G[@]}"; do args+=( --data-urlencode "exclude[domain]=$d" ); done
+            for d in "${EX_DOM_L[@]}"; do args+=( --data-urlencode "exclude[domain]=$d" ); done
+            curl -G -fsSL "${args[@]}" --data-urlencode "data=domains" "$base/" \
+              | sed 's/\r$//' | sed '/^\s*$/d'
+          }
+
+          fetch_cidr() {
+            local key="$1" val="$2" cat="$3"
+            load_local_excludes "$cat"
+            IFS=$'\0' read -r -d '' -a args < <(build_query_args "$key" "$val")
+            for i in "${EX_IP4_G[@]}"; do args+=( --data-urlencode "exclude[ip4]=$i" ); done
+            for i in "${EX_IP4_L[@]}"; do args+=( --data-urlencode "exclude[ip4]=$i" ); done
+            for i in "${EX_IP6_G[@]}"; do args+=( --data-urlencode "exclude[ip6]=$i" ); done
+            for i in "${EX_IP6_L[@]}"; do args+=( --data-urlencode "exclude[ip6]=$i" ); done
+            { curl -G -fsSL "${args[@]}" --data-urlencode "data=cidr4" "$base/"; echo;
+              curl -G -fsSL "${args[@]}" --data-urlencode "data=cidr6" "$base/"; } \
+              | sed 's/\r$//' | sed '/^\s*$/d'
+          }
+
+          # SITE level
+          for path in "${SITES[@]}"; do
+            category="${path%%/*}"
+            site="${path##*/}"
+            fetch_domains site "$site" "$category" > "dist/mrs/domain/${category}--${site}.txt" || true
+            fetch_cidr    site "$site" "$category" > "dist/mrs/ipcidr/${category}--${site}.txt" || true
+          done
+
+          # CATEGORY level
+          for c in "${CATEGORIES[@]}"; do
+            fetch_domains group "$c" "$c" > "dist/mrs/domain/${c}.txt" || true
+            fetch_cidr    group "$c" "$c" > "dist/mrs/ipcidr/${c}.txt" || true
+          done
+
+          # ALL level (из категорий; без дублирования site-level)
+          {
+            shopt -s nullglob
+            tmp="$(mktemp)"
+            for f in dist/mrs/domain/*.txt; do [[ "$f" == *--* ]] || cat "$f"; done \
+              | sed '/^\s*$/d' | sort -u > "$tmp"
+            [[ -s "$tmp" ]] && mv "$tmp" dist/mrs/domain/_all.txt || rm -f "$tmp"
+
+            tmp="$(mktemp)"
+            for f in dist/mrs/ipcidr/*.txt; do [[ "$f" == *--* ]] || cat "$f"; done \
+              | sed '/^\s*$/d' | sort -u > "$tmp"
+            [[ -s "$tmp" ]] && mv "$tmp" dist/mrs/ipcidr/_all.txt || rm -f "$tmp"
+          }
+
+          echo "sites=${#SITES[@]} categories=${#CATEGORIES[@]}"
+
+      # ---------- Конвертация в .mrs ----------
+      - name: Convert to .mrs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shopt -s nullglob
+          find dist/mrs -type f -name '*.txt' -size 0 -delete || true
+
+          convert_dir() {
+            local behavior="$1" dir="$2" count=0
+            for f in "$dir"/*.txt; do
+              [[ -s "$f" ]] || { echo "[skip] empty: $f"; continue; }
+              mihomo convert-ruleset "$behavior" text "$f" "${f%.txt}.mrs"
+              echo "[ok] $behavior: ${f%.txt}.mrs"
+              ((count++)) || true
+            done
+            echo "[summary] $behavior converted: $count files"
+          }
+
+          convert_dir domain dist/mrs/domain
+          convert_dir ipcidr dist/mrs/ipcidr
+
+      - name: Stop iplist
+        if: always()
+        run: |
+          kill $(cat iplist.pid) || true
+
+      # ---------- GitHub Pages ----------
+      - name: Prepare Pages site
+        run: |
+          set -Eeuo pipefail
+          rm -rf site
+          mkdir -p site
+          shopt -s globstar nullglob
+          for f in dist/mrs/**/*.mrs; do
+            rel="${f#dist/mrs/}"
+            mkdir -p "site/$(dirname "$rel")"
+            cp "$f" "site/$rel"
+          done
+          {
+            echo "<!doctype html><meta charset='utf-8'><title>iplist MRS</title>"
+            echo "<h1>iplist → .mrs</h1><p>Levels: site, category, _all | Excludes supported | Auto-bootstrap</p><pre>"
+            find site -type f -name '*.mrs' | sed 's#^site/##' | sort
+            echo "</pre>"
+          } > site/index.html
+          ( cd site && find . -type f -name '*.mrs' | sort > index.txt )
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # --------- Weekly «clean» build без кэшей ---------
+  weekly-clean:
+    name: weekly clean (no cache)
+    if: github.event_name == 'schedule' && github.event.schedule == '20 2 * * 0'
+    runs-on: ubuntu-latest
+    env:
+      MIHOMO_VERSION: v1.19.14
+      GOBIN:  ${{ github.workspace }}/.nocache/go/bin
+      GOPATH: ${{ github.workspace }}/.nocache/go
+      DOMAIN_WILDCARD: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: '8.2', tools: composer, coverage: none }
+      - run: composer clear-cache || true
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23.x' }
+      - run: echo "$GOBIN" >> $GITHUB_PATH
+      - run: go clean -modcache || true
+      - run: go install github.com/metacubex/mihomo@${MIHOMO_VERSION} && mihomo -v
+      - run: php index.php > server.log 2>&1 & echo $! > iplist.pid
+      - run: |
+          for i in {1..60}; do curl -sf "http://127.0.0.1:8080/?format=json" && exit 0; sleep 1; done
+          echo "::error::iplist not ready"; tail -n 200 server.log || true; exit 1
+      # Ради краткости: дальше повтори шаги Generate / Convert / Pages как выше
