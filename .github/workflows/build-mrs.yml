@@ -29,7 +29,7 @@ jobs:
       - name: Install mihomo (for convert-ruleset)
         run: |
           echo "GOBIN=$HOME/go/bin" >> $GITHUB_ENV
-          go install github.com/MetaCubeX/mihomo@latest
+          go install github.com/metacubex/mihomo@latest
 
       - name: Start iplist HTTP server
         run: |
