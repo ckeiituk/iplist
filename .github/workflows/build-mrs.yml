@@ -20,17 +20,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # Куда go install положит бинарь mihomo
       GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
-      # Зафиксируй версию; меняй осознанно
       MIHOMO_VERSION: v1.19.14
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- PHP + Composer (быстро через setup-php) ----------
+      # ---------- PHP + Composer ----------
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -88,7 +86,7 @@ jobs:
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
             echo "mihomo cached"
           else
-            # Правильный модульный путь в нижнем регистре
+            # правильный модульный путь (нижний регистр)
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
           mihomo -v
@@ -113,8 +111,8 @@ jobs:
           tail -n 200 server.log || true
           exit 1
 
-      # ---------- Генерация списков (без SIGPIPE, с триммингом) ----------
-      - name: Generate text lists
+      # ---------- Генерация списков ----------
+      - name: Generate text lists (sites, groups, ALL)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -128,14 +126,14 @@ jobs:
             SITES+=("$group/$site")
           done < <(find config -type f -name '*.json' -print0)
 
-          # Группы: каталоги первого уровня в config/
+          # Группы (категории): каталоги первого уровня
           declare -a GROUPS=()
           while IFS= read -r -d '' d; do
             GROUPS+=("$(basename "$d")")
           done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
 
           base="http://127.0.0.1:8080"
-          # Удаляем CR и пустые строки
+          # Трим CR и пустые строки
           fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2" | sed 's/\r$//' | sed '/^\s*$/d'; }
           fetch_cidr()    { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } \
                              | sed 's/\r$//' | sed '/^\s*$/d'; }
@@ -148,22 +146,33 @@ jobs:
             fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
           done
 
-          # По группам (агрегаты)
+          # По группам (агрегаты категории)
           for g in "${GROUPS[@]}"; do
             fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
             fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
           done
 
+          # --------- ALL (всё вместе из всех групп, без дубликатов) ---------
+          # Берём только групповые .txt (без site-level файлов c '--')
+          # Domains
+          { find dist/mrs/domain -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
+              | xargs -0 cat 2>/dev/null \
+              | sed 's/\r$//' | sed '/^\s*$/d' \
+              | LC_ALL=C sort -u > dist/mrs/domain/all.txt; } || true
+          # IP CIDR
+          { find dist/mrs/ipcidr -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
+              | xargs -0 cat 2>/dev/null \
+              | sed 's/\r$//' | sed '/^\s*$/d' \
+              | LC_ALL=C sort -u > dist/mrs/ipcidr/all.txt; } || true
+
           echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
 
-      # ---------- Конвертация в .mrs (без panic: empty rule) ----------
+      # ---------- Конвертация в .mrs (пропускаем пустые) ----------
       - name: Convert to .mrs
         shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
-
-          # Удалим нулевые файлы чтобы mihomo не падал
           find dist/mrs -type f -name '*.txt' -size 0 -delete || true
 
           convert_dir() {
@@ -194,11 +203,23 @@ jobs:
           name: mrs
           path: dist/mrs
 
-      - name: Commit artifacts
+      - name: Commit artifacts (.mrs only; dist is gitignored)
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
+          set -Eeuo pipefail
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/mrs
+
+          shopt -s nullglob
+          files=(dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
+
+          if (( ${#files[@]} == 0 )); then
+            echo "No .mrs files to commit."
+            exit 0
+          fi
+
+          git add -f "${files[@]}"
+
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
