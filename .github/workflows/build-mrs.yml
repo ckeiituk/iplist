@@ -45,31 +45,47 @@ jobs:
           echo "iplist service is not responding" >&2
           exit 1
 
-      - name: Generate text lists
+      - name: Generate text lists (robust)
+        shell: bash
         run: |
+          set -Eeuo pipefail
+      
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
-
-          # Собираем список сайтов (config/<group>/<site>.json) и групп (config/<group>/)
-          mapfile -t SITES < <(find config -type f -name "*.json" -printf '%h %f\n' | awk '{gsub(/\.json$/,"",$2); print $1"/"$2}')
-          mapfile -t GROUPS < <(find config -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
-
+      
+          # Собираем сайты: config/<group>/<site>.json
+          declare -a SITES=()
+          while IFS= read -r -d '' f; do
+            group="$(basename "$(dirname "$f")")"
+            site="$(basename "$f" .json)"
+            SITES+=("$group/$site")
+          done < <(find config -type f -name '*.json' -print0)
+      
+          # Собираем группы: каталоги первого уровня в config/
+          declare -a GROUPS=()
+          while IFS= read -r -d '' d; do
+            GROUPS+=("$(basename "$d")")
+          done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
+      
           base="http://127.0.0.1:8080"
           fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2"; }
           fetch_cidr() { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } | sed '/^$/d'; }
-
+      
           # По сайтам
           for path in "${SITES[@]}"; do
-            group="$(basename "$(dirname "$path")")"
-            site="$(basename "$path")"
+            group="${path%%/*}"
+            site="${path##*/}"
             fetch_domains site "$site" > "dist/mrs/domain/${group}--${site}.txt" || true
             fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
           done
-
+      
           # По группам (агрегаты)
           for g in "${GROUPS[@]}"; do
             fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
             fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
           done
+      
+          echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
+
 
       - name: Convert to .mrs
         run: |
