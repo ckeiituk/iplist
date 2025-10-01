@@ -1,8 +1,9 @@
-name: Build MRS from iplist
+name: Build MRS from iplist (fast & robust)
+
 on:
   schedule:
-    - cron: "15 */6 * * *"   # каждые 6 часов (CRON выполняется по UTC)
-  workflow_dispatch: {}       # кнопка “Run workflow” руками
+    - cron: "15 */6 * * *"   # каждые 6 часов (UTC)
+  workflow_dispatch: {}
   push:
     paths:
       - "config/**"
@@ -11,65 +12,134 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-mrs-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Куда go install положит бинарь mihomo
+      GOBIN: ${{ github.workspace }}/.cache/go/bin
+      GOPATH: ${{ github.workspace }}/.cache/go
+      # Зафиксируй версию; меняй осознанно
+      MIHOMO_VERSION: v1.19.14
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y php-cli composer curl jq dnsutils whois ipcalc golang-go
+      # ---------- PHP + Composer (быстро через setup-php) ----------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer
+          coverage: none
+          extensions: curl, json
+
+      - name: Get Composer cache dir
+        id: composer-cache-dir
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Restore Composer cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache-dir.outputs.dir }}
+          key: composer-cache-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            composer-cache-${{ runner.os }}-
+
+      - name: Restore vendor cache
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            vendor-${{ runner.os }}-
 
       - name: Install PHP deps
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Install mihomo (for convert-ruleset)
+      # ---------- Go + mihomo ----------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Restore Go bin cache (mihomo)
+        uses: actions/cache@v4
+        with:
+          path: .cache/go/bin
+          key: go-bin-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
+
+      - name: Restore Go mod cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/go/pkg/mod
+          key: go-mod-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
+          restore-keys: |
+            go-mod-${{ runner.os }}-
+
+      - name: Install mihomo (convert-ruleset)
         run: |
-          echo "GOBIN=$HOME/go/bin" >> $GITHUB_ENV
-          go install github.com/metacubex/mihomo@latest
+          echo "$GOBIN" >> $GITHUB_PATH
+          if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
+            echo "mihomo cached"
+          else
+            # Правильный модульный путь в нижнем регистре
+            go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
+          fi
+          mihomo -v
 
+      # ---------- iplist HTTP ----------
       - name: Start iplist HTTP server
         run: |
           php index.php > server.log 2>&1 &
           echo $! > iplist.pid
 
-      - name: Wait for iplist to become ready
+      - name: Wait for iplist to be ready
         run: |
           for i in {1..60}; do
-            if curl -sf "http://127.0.0.1:8080/?format=json" >/dev/null; then exit 0; fi
+            if curl -sf "http://127.0.0.1:8080/?format=json" >/dev/null; then
+              echo "iplist is ready"
+              exit 0
+            fi
             sleep 1
           done
           echo "iplist service is not responding" >&2
+          echo "--- server.log (tail) ---"
+          tail -n 200 server.log || true
           exit 1
 
-      - name: Generate text lists (robust)
+      # ---------- Генерация списков (без SIGPIPE, с триммингом) ----------
+      - name: Generate text lists
         shell: bash
         run: |
           set -Eeuo pipefail
-      
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
-      
-          # Собираем сайты: config/<group>/<site>.json
+
+          # Сайты: config/<group>/<site>.json
           declare -a SITES=()
           while IFS= read -r -d '' f; do
             group="$(basename "$(dirname "$f")")"
             site="$(basename "$f" .json)"
             SITES+=("$group/$site")
           done < <(find config -type f -name '*.json' -print0)
-      
-          # Собираем группы: каталоги первого уровня в config/
+
+          # Группы: каталоги первого уровня в config/
           declare -a GROUPS=()
           while IFS= read -r -d '' d; do
             GROUPS+=("$(basename "$d")")
           done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
-      
+
           base="http://127.0.0.1:8080"
-          fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2"; }
-          fetch_cidr() { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } | sed '/^$/d'; }
-      
+          # Удаляем CR и пустые строки
+          fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2" | sed 's/\r$//' | sed '/^\s*$/d'; }
+          fetch_cidr()    { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } \
+                             | sed 's/\r$//' | sed '/^\s*$/d'; }
+
           # По сайтам
           for path in "${SITES[@]}"; do
             group="${path%%/*}"
@@ -77,31 +147,52 @@ jobs:
             fetch_domains site "$site" > "dist/mrs/domain/${group}--${site}.txt" || true
             fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
           done
-      
+
           # По группам (агрегаты)
           for g in "${GROUPS[@]}"; do
             fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
             fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
           done
-      
+
           echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
 
-
+      # ---------- Конвертация в .mrs (без panic: empty rule) ----------
       - name: Convert to .mrs
+        shell: bash
         run: |
-          M="$HOME/go/bin/mihomo"
+          set -Eeuo pipefail
           shopt -s nullglob
-          for f in dist/mrs/domain/*.txt; do
-            "$M" convert-ruleset domain text "$f" "${f%.txt}.mrs"
-          done
-          for f in dist/mrs/ipcidr/*.txt; do
-            "$M" convert-ruleset ipcidr text "$f" "${f%.txt}.mrs"
-          done
+
+          # Удалим нулевые файлы чтобы mihomo не падал
+          find dist/mrs -type f -name '*.txt' -size 0 -delete || true
+
+          convert_dir() {
+            local behavior="$1"  # domain | ipcidr
+            local dir="$2"
+            local count=0
+            for f in "$dir"/*.txt; do
+              [[ -s "$f" ]] || { echo "[skip] empty: $f"; continue; }
+              mihomo convert-ruleset "$behavior" text "$f" "${f%.txt}.mrs"
+              echo "[ok] $behavior: ${f%.txt}.mrs"
+              ((count++)) || true
+            done
+            echo "[summary] $behavior converted: $count files"
+          }
+
+          convert_dir domain dist/mrs/domain
+          convert_dir ipcidr dist/mrs/ipcidr
 
       - name: Stop iplist
         if: always()
         run: |
           kill $(cat iplist.pid) || true
+
+      # ---------- Публикация ----------
+      - name: Upload artifacts (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrs
+          path: dist/mrs
 
       - name: Commit artifacts
         run: |
