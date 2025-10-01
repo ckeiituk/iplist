@@ -1,0 +1,19 @@
+{
+  "domains": [
+    "animego.online",
+    "www.animego.online"
+  ],
+  "dns": [],
+  "timeout": 3600,
+  "ip4": [],
+  "ip6": [],
+  "cidr4": [],
+  "cidr6": [],
+  "external": {
+    "domains": [],
+    "ip4": [],
+    "ip6": [],
+    "cidr4": [],
+    "cidr6": []
+  }
+}
