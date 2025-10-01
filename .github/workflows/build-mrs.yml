@@ -195,13 +195,27 @@ jobs:
           path: dist/mrs
 
       - name: Commit artifacts
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
+          set -Eeuo pipefail
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/mrs
+      
+          shopt -s nullglob
+          files=(dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
+      
+          if (( ${#files[@]} == 0 )); then
+            echo "No .mrs files to commit."
+            exit 0
+          fi
+      
+          # форсим добавление, игнор обходится флагом -f
+          git add -f "${files[@]}"
+      
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
             git commit -m "chore(mrs): rebuild on $(date -u +%F:%T) UTC"
             git push
           fi
+
