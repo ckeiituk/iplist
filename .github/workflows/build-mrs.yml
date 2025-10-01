@@ -1,4 +1,4 @@
-name: Build MRS from iplist (fast & robust)
+name: Build MRS from iplist (pages, fast & robust, with categories)
 
 on:
   schedule:
@@ -10,7 +10,9 @@ on:
       - ".github/workflows/build-mrs.yml"
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: build-mrs-${{ github.ref }}
@@ -19,18 +21,18 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
-      # Куда go install положит бинарь mihomo
-      GOBIN: ${{ github.workspace }}/.cache/go/bin
-      GOPATH: ${{ github.workspace }}/.cache/go
-      # Зафиксируй версию; меняй осознанно
       MIHOMO_VERSION: v1.19.14
+      GOBIN:  ${{ github.workspace }}/.cache/go/bin
+      GOPATH: ${{ github.workspace }}/.cache/go
+      DOMAIN_WILDCARD: "0"  # поставь "1", если нужно &wildcard=1 для доменных списков
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- PHP + Composer (быстро через setup-php) ----------
+      # ---------- PHP + Composer ----------
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -60,6 +62,10 @@ jobs:
             vendor-${{ runner.os }}-
 
       - name: Install PHP deps
+        env:
+          COMPOSER_PROCESS_TIMEOUT: "0"
+          COMPOSER_NO_INTERACTION: "1"
+          COMPOSER_NO_AUDIT: "1"
         run: composer install --no-interaction --prefer-dist --no-progress
 
       # ---------- Go + mihomo ----------
@@ -84,11 +90,12 @@ jobs:
 
       - name: Install mihomo (convert-ruleset)
         run: |
+          set -e
           echo "$GOBIN" >> $GITHUB_PATH
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
             echo "mihomo cached"
           else
-            # Правильный модульный путь в нижнем регистре
+            # модульный путь — в нижнем регистре
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
           mihomo -v
@@ -108,62 +115,91 @@ jobs:
             fi
             sleep 1
           done
-          echo "iplist service is not responding" >&2
+          echo "::error::iplist service is not responding"
           echo "--- server.log (tail) ---"
           tail -n 200 server.log || true
           exit 1
 
-      # ---------- Генерация списков (без SIGPIPE, с триммингом) ----------
+      # ---------- Генерация списков (site, category, all) ----------
       - name: Generate text lists
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
 
-          # Сайты: config/<group>/<site>.json
+          # Сайты: config/<category>/<site>.json
           declare -a SITES=()
           while IFS= read -r -d '' f; do
-            group="$(basename "$(dirname "$f")")"
+            category="$(basename "$(dirname "$f")")"
             site="$(basename "$f" .json)"
-            SITES+=("$group/$site")
+            SITES+=("$category/$site")
           done < <(find config -type f -name '*.json' -print0)
 
-          # Группы: каталоги первого уровня в config/
-          declare -a GROUPS=()
+          # Категории (группы): каталоги первого уровня
+          declare -a CATEGORIES=()
           while IFS= read -r -d '' d; do
-            GROUPS+=("$(basename "$d")")
+            CATEGORIES+=("$(basename "$d")")
           done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
 
           base="http://127.0.0.1:8080"
-          # Удаляем CR и пустые строки
-          fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2" | sed 's/\r$//' | sed '/^\s*$/d'; }
-          fetch_cidr()    { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } \
-                             | sed 's/\r$//' | sed '/^\s*$/d'; }
+          # Удаляем CR и пустые строки: mihomo не любит пустые правила
+          fetch_domains() {
+            local key="$1" val="$2" w=""
+            [[ "${DOMAIN_WILDCARD}" == "1" ]] && w="&wildcard=1"
+            curl -fsSL "$base/?format=text&data=domains&${key}=${val}${w}" \
+              | sed 's/\r$//' | sed '/^\s*$/d'
+          }
+          fetch_cidr() {
+            local key="$1" val="$2"
+            { curl -fsSL "$base/?format=text&data=cidr4&${key}=${val}"; echo; \
+              curl -fsSL "$base/?format=text&data=cidr6&${key}=${val}"; } \
+              | sed 's/\r$//' | sed '/^\s*$/d'
+          }
 
-          # По сайтам
+          # По сайтам (site-level)
           for path in "${SITES[@]}"; do
-            group="${path%%/*}"
+            category="${path%%/*}"
             site="${path##*/}"
-            fetch_domains site "$site" > "dist/mrs/domain/${group}--${site}.txt" || true
-            fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
+            fetch_domains site "$site" > "dist/mrs/domain/${category}--${site}.txt" || true
+            fetch_cidr    site "$site" > "dist/mrs/ipcidr/${category}--${site}.txt" || true
           done
 
-          # По группам (агрегаты)
-          for g in "${GROUPS[@]}"; do
-            fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
-            fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
+          # По категориям (category-level агрегаты)
+          for c in "${CATEGORIES[@]}"; do
+            fetch_domains group "$c" > "dist/mrs/domain/${c}.txt" || true
+            fetch_cidr    group "$c" > "dist/mrs/ipcidr/${c}.txt" || true
           done
 
-          echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
+          # Агрегат «всё сразу» (только из категорий, чтобы не удваивать сайты)
+          {
+            shopt -s nullglob
+            # domain/_all.txt
+            tmp="$(mktemp)"
+            for f in dist/mrs/domain/*.txt; do
+              [[ "$f" == *--* ]] && continue   # пропускаем site-level
+              cat "$f"
+            done | sed '/^\s*$/d' | sort -u > "$tmp"
+            if [[ -s "$tmp" ]]; then mv "$tmp" dist/mrs/domain/_all.txt; else rm -f "$tmp"; fi
 
-      # ---------- Конвертация в .mrs (без panic: empty rule) ----------
+            # ipcidr/_all.txt
+            tmp="$(mktemp)"
+            for f in dist/mrs/ipcidr/*.txt; do
+              [[ "$f" == *--* ]] && continue
+              cat "$f"
+            done | sed '/^\s*$/d' | sort -u > "$tmp"
+            if [[ -s "$tmp" ]]; then mv "$tmp" dist/mrs/ipcidr/_all.txt; else rm -f "$tmp"; fi
+          }
+
+          echo "sites=${#SITES[@]} categories=${#CATEGORIES[@]}"
+
+      # ---------- Конвертация в .mrs (safe) ----------
       - name: Convert to .mrs
         shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
 
-          # Удалим нулевые файлы чтобы mihomo не падал
+          # Удалим нулевые .txt — иначе mihomo паникнёт
           find dist/mrs -type f -name '*.txt' -size 0 -delete || true
 
           convert_dir() {
@@ -187,35 +223,36 @@ jobs:
         run: |
           kill $(cat iplist.pid) || true
 
-      # ---------- Публикация ----------
-      - name: Upload artifacts (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mrs
-          path: dist/mrs
-
-      - name: Commit artifacts
-        shell: bash
+      # ---------- GitHub Pages ----------
+      - name: Prepare Pages site
         run: |
           set -Eeuo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      
-          shopt -s nullglob
-          files=(dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
-      
-          if (( ${#files[@]} == 0 )); then
-            echo "No .mrs files to commit."
-            exit 0
-          fi
-      
-          # форсим добавление, игнор обходится флагом -f
-          git add -f "${files[@]}"
-      
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "chore(mrs): rebuild on $(date -u +%F:%T) UTC"
-            git push
-          fi
+          rm -rf site
+          mkdir -p site
+          shopt -s globstar nullglob
+          # Копируем только .mrs, сохраняя структуру
+          for f in dist/mrs/**/*.mrs; do
+            rel="${f#dist/mrs/}"
+            mkdir -p "site/$(dirname "$rel")"
+            cp "$f" "site/$rel"
+          done
+          # index.html для навигации
+          {
+            echo "<!doctype html><meta charset='utf-8'><title>iplist MRS</title>"
+            echo "<h1>iplist → .mrs</h1><p>Level: site, category, all</p><pre>"
+            find site -type f -name '*.mrs' | sed 's#^site/##' | sort
+            echo "</pre>"
+          } > site/index.html
+          ( cd site && find . -type f -name '*.mrs' | sort > index.txt )
 
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
