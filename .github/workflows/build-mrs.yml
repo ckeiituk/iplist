@@ -20,15 +20,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      # куда go install положит mihomo
       GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
+      # пин версии mihomo (менять осознанно)
       MIHOMO_VERSION: v1.19.14
+      # composer — чтобы не виснуть в сети
+      COMPOSER_PROCESS_TIMEOUT: 0
+      COMPOSER_NO_INTERACTION: 1
+      COMPOSER_NO_AUDIT: 1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- PHP + Composer ----------
+      # ---------- PHP + Composer (быстро через setup-php) ----------
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -45,7 +51,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.composer-cache-dir.outputs.dir }}
-          key: composer-cache-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          # lock-файла может не быть — ключ без хэша ок
+          key: composer-cache-${{ runner.os }}-
           restore-keys: |
             composer-cache-${{ runner.os }}-
 
@@ -53,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          key: vendor-${{ runner.os }}-
           restore-keys: |
             vendor-${{ runner.os }}-
 
@@ -65,6 +72,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
+          cache: false   # свой кэш ниже
 
       - name: Restore Go bin cache (mihomo)
         uses: actions/cache@v4
@@ -86,7 +94,7 @@ jobs:
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
             echo "mihomo cached"
           else
-            # правильный модульный путь (нижний регистр)
+            # правильный модульный путь — нижний регистр
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
           mihomo -v
@@ -111,14 +119,15 @@ jobs:
           tail -n 200 server.log || true
           exit 1
 
-      # ---------- Генерация списков ----------
-      - name: Generate text lists (sites, groups, ALL)
+      # ---------- Генерация списков (site → group → all) ----------
+      - name: Generate text lists (sites → groups → all)
         shell: bash
         run: |
           set -Eeuo pipefail
+          shopt -s nullglob
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
 
-          # Сайты: config/<group>/<site>.json
+          # 1) сайты: config/<group>/<site>.json
           declare -a SITES=()
           while IFS= read -r -d '' f; do
             group="$(basename "$(dirname "$f")")"
@@ -126,19 +135,20 @@ jobs:
             SITES+=("$group/$site")
           done < <(find config -type f -name '*.json' -print0)
 
-          # Группы (категории): каталоги первого уровня
-          declare -a GROUPS=()
-          while IFS= read -r -d '' d; do
-            GROUPS+=("$(basename "$d")")
-          done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
+          # 2) группы — уникальные из SITES
+          declare -A seen=()
+          for path in "${SITES[@]}"; do
+            g="${path%%/*}"
+            seen["$g"]=1
+          done
+          GROUPS=("${!seen[@]}")
 
           base="http://127.0.0.1:8080"
-          # Трим CR и пустые строки
-          fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2" | sed 's/\r$//' | sed '/^\s*$/d'; }
-          fetch_cidr()    { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } \
-                             | sed 's/\r$//' | sed '/^\s*$/d'; }
+          trim(){ sed 's/\r$//' | sed '/^\s*$/d'; }
+          fetch_domains(){ curl -fsSL "$base/?format=text&data=domains&$1=$2" | trim; }
+          fetch_cidr(){ { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } | trim; }
 
-          # По сайтам
+          # 3) по сайтам → group--site.txt
           for path in "${SITES[@]}"; do
             group="${path%%/*}"
             site="${path##*/}"
@@ -146,46 +156,61 @@ jobs:
             fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
           done
 
-          # По группам (агрегаты категории)
+          # 4) по группам → dedup из всех site-файлов этой группы
           for g in "${GROUPS[@]}"; do
-            fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
-            fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
+            { cat dist/mrs/domain/"$g"--*.txt 2>/dev/null | trim | LC_ALL=C sort -u > "dist/mrs/domain/${g}.txt"; } || true
+            { cat dist/mrs/ipcidr/"$g"--*.txt  2>/dev/null | trim | LC_ALL=C sort -u > "dist/mrs/ipcidr/${g}.txt"; } || true
           done
 
-          # --------- ALL (всё вместе из всех групп, без дубликатов) ---------
-          # Берём только групповые .txt (без site-level файлов c '--')
-          # Domains
-          { find dist/mrs/domain -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
-              | xargs -0 cat 2>/dev/null \
-              | sed 's/\r$//' | sed '/^\s*$/d' \
-              | LC_ALL=C sort -u > dist/mrs/domain/all.txt; } || true
-          # IP CIDR
-          { find dist/mrs/ipcidr -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
-              | xargs -0 cat 2>/dev/null \
-              | sed 's/\r$//' | sed '/^\s*$/d' \
-              | LC_ALL=C sort -u > dist/mrs/ipcidr/all.txt; } || true
+          # 5) ALL → dedup из всех site-файлов
+          { cat dist/mrs/domain/*--*.txt 2>/dev/null | trim | LC_ALL=C sort -u > dist/mrs/domain/all.txt; } || true
+          { cat dist/mrs/ipcidr/*--*.txt  2>/dev/null | trim | LC_ALL=C sort -u > dist/mrs/ipcidr/all.txt; } || true
 
           echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
 
-      # ---------- Конвертация в .mrs (пропускаем пустые) ----------
+      # ---------- Конвертация в .mrs (site + group + all) ----------
       - name: Convert to .mrs
         shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
+
+          # удалим пустые .txt, чтобы mihomo не падал "panic: empty rule"
           find dist/mrs -type f -name '*.txt' -size 0 -delete || true
 
           convert_dir() {
             local behavior="$1"  # domain | ipcidr
             local dir="$2"
-            local count=0
-            for f in "$dir"/*.txt; do
+            local n_site=0 n_group=0 n_all=0
+
+            # site-level
+            for f in "$dir"/*--*.txt; do
               [[ -s "$f" ]] || { echo "[skip] empty: $f"; continue; }
               mihomo convert-ruleset "$behavior" text "$f" "${f%.txt}.mrs"
               echo "[ok] $behavior: ${f%.txt}.mrs"
-              ((count++)) || true
+              ((n_site++)) || true
             done
-            echo "[summary] $behavior converted: $count files"
+
+            # group-level
+            for f in "$dir"/*.txt; do
+              [[ "$f" == *"--"* ]] && continue
+              [[ "$(basename "$f")" == "all.txt" ]] && continue
+              [[ -s "$f" ]] || { echo "[skip] empty: $f"; continue; }
+              mihomo convert-ruleset "$behavior" text "$f" "${f%.txt}.mrs"
+              echo "[ok] $behavior: ${f%.txt}.mrs"
+              ((n_group++)) || true
+            done
+
+            # all
+            if [[ -s "$dir/all.txt" ]]; then
+              mihomo convert-ruleset "$behavior" text "$dir/all.txt" "$dir/all.mrs"
+              echo "[ok] $behavior: $dir/all.mrs"
+              ((n_all++)) || true
+            else
+              echo "[skip] empty: $dir/all.txt"
+            fi
+
+            echo "[summary] $behavior converted: site=$n_site group=$n_group all=$n_all total=$((n_site+n_group+n_all))"
           }
 
           convert_dir domain dist/mrs/domain
@@ -197,11 +222,13 @@ jobs:
           kill $(cat iplist.pid) || true
 
       # ---------- Публикация ----------
-      - name: Upload artifacts (optional)
+      - name: Upload artifacts (.mrs only)
         uses: actions/upload-artifact@v4
         with:
           name: mrs
-          path: dist/mrs
+          path: |
+            dist/mrs/domain/*.mrs
+            dist/mrs/ipcidr/*.mrs
 
       - name: Commit artifacts (.mrs only; dist is gitignored)
         shell: bash
@@ -218,6 +245,7 @@ jobs:
             exit 0
           fi
 
+          # dist/ обычно в .gitignore — добавляем форсом
           git add -f "${files[@]}"
 
           if git diff --cached --quiet; then
