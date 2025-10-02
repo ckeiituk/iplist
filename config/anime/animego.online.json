@@ -1,7 +1,8 @@
 {
   "domains": [
     "animego.online",
-    "www.animego.online"
+    "www.animego.online",
+    "anime-go.cc"
   ],
   "dns": [],
   "timeout": 3600,
