@@ -1,4 +1,4 @@
-name: Build MRS & YAML from iplist (fast)
+name: Build YAML (source) → MRS from iplist
 
 on:
   schedule:
@@ -23,7 +23,7 @@ jobs:
       # Куда кладём go-бинарники/модули (чтобы кэшировать)
       GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
-      # Зафиксированная версия mihomo (совету от «стабильности»)
+      # Зафиксированная версия mihomo (стабильность сборки)
       MIHOMO_VERSION: v1.19.14
       # Composer — без интерактива, без аудита
       COMPOSER_PROCESS_TIMEOUT: 0
@@ -87,7 +87,7 @@ jobs:
           restore-keys: |
             go-mod-${{ runner.os }}-
 
-      - name: Install mihomo (convert-ruleset)
+      - name: Install mihomo (ruleset converter)
         run: |
           echo "$GOBIN" >> $GITHUB_PATH
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
@@ -117,12 +117,12 @@ jobs:
           tail -n 200 server.log || true
           exit 1
 
-      # ===== Генерация текстовых списков =====
-      - name: Generate text lists (.txt, per-site, per-group, all)
+      # ===== Генерация YAML (source) напрямую из iplist =====
+      - name: Generate YAML sources (per-site, per-group, all)
         shell: bash
         run: |
           set -Eeuo pipefail
-          mkdir -p dist/mrs/domain dist/mrs/ipcidr
+          mkdir -p dist/yaml/domain dist/yaml/ipcidr
 
           # Сайты: config/<group>/<site>.json
           declare -a SITES=()
@@ -139,128 +139,105 @@ jobs:
           done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
 
           base="http://127.0.0.1:8080"
-          # Трим CR и пустые строки
-          fetch_domains() { curl -fsSL "$base/?format=text&data=domains&$1=$2" | sed 's/\r$//' | sed '/^\s*$/d'; }
-          fetch_cidr()    { { curl -fsSL "$base/?format=text&data=cidr4&$1=$2"; echo; curl -fsSL "$base/?format=text&data=cidr6&$1=$2"; } \
-                             | sed 's/\r$//' | sed '/^\s*$/d'; }
 
-          # По сайтам
-          for path in "${SITES[@]}"; do
-            group="${path%%/*}"
-            site="${path##*/}"
-            fetch_domains site "$site" > "dist/mrs/domain/${group}--${site}.txt" || true
-            fetch_cidr    site "$site" > "dist/mrs/ipcidr/${group}--${site}.txt" || true
-          done
-
-          # По группам (агрегаты категории)
-          for g in "${GROUPS[@]}"; do
-            fetch_domains group "$g" > "dist/mrs/domain/${g}.txt" || true
-            fetch_cidr    group "$g" > "dist/mrs/ipcidr/${g}.txt" || true
-          done
-
-          # ALL (всё вместе из групповых .txt, без *--*.txt)
-          { find dist/mrs/domain -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
-              | xargs -0 cat 2>/dev/null \
-              | sed 's/\r$//' | sed '/^\s*$/d' \
-              | LC_ALL=C sort -u > dist/mrs/domain/all.txt; } || true
-
-          { find dist/mrs/ipcidr -maxdepth 1 -type f -name '*.txt' ! -name '*--*.txt' -print0 \
-              | xargs -0 cat 2>/dev/null \
-              | sed 's/\r$//' | sed '/^\s*$/d' \
-              | LC_ALL=C sort -u > dist/mrs/ipcidr/all.txt; } || true
-
-          echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
-
-      # ===== Нормализация доменов к семантике '+.' (root + subdomains) =====
-      - name: Normalize domain .txt to '+.' semantics
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          shopt -s nullglob
-          for f in dist/mrs/domain/*.txt; do
-            [[ -s "$f" ]] || continue
+          # ========== Вспомогалки ==========
+          # Нормализуем домены к семантике "+." (root + subdomains)
+          yaml_from_domains_stream() {
+            echo "payload:"
+            sed 's/\r$//' | sed '/^\s*$/d' | \
             awk '
               {
                 line=$0
-                # пустые — пропускаем
-                if (line ~ /^[[:space:]]*$/) next
-                # если уже wildcard (*...), уже с +. или .  — оставляем
-                if (line ~ /^\*/ || line ~ /^\+\./ || line ~ /^\./) { print line; next }
-                # если похоже на URL с / — оставляем как есть (на всякий)
-                if (line ~ /\//) { print line; next }
-                # иначе делаем root+subs
-                print "+." line
-              }
-            ' "$f" | LC_ALL=C sort -u > "$f.__tmp__" && mv "$f.__tmp__" "$f"
-          done
-
-      # ===== Конвертация в .mrs =====
-      - name: Convert to .mrs
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          shopt -s nullglob
-          # удаляем пустые .txt, чтобы mihomo не падал на "empty rule"
-          find dist/mrs -type f -name '*.txt' -size 0 -delete || true
-
-          convert_dir() {
-            local behavior="$1"  # domain | ipcidr
-            local dir="$2"
-            local count=0
-            for f in "$dir"/*.txt; do
-              [[ -s "$f" ]] || { echo "[skip] empty: $f"; continue; }
-              mihomo convert-ruleset "$behavior" text "$f" "${f%.txt}.mrs"
-              echo "[ok] $behavior: ${f%.txt}.mrs"
-              ((count++)) || true
-            done
-            echo "[summary] $behavior converted: $count files"
-          }
-          convert_dir domain dist/mrs/domain
-          convert_dir ipcidr dist/mrs/ipcidr
-
-      # ===== Генерация YAML ruleset (payload) =====
-      - name: Generate YAML ruleset (payload)
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          shopt -s nullglob
-          mkdir -p dist/yaml/domain dist/yaml/ipcidr
-
-          make_yaml_domains() {
-            local in_txt="$1"
-            local out_yaml="$2"
-            echo "payload:" > "$out_yaml"
-            sed 's/\r$//' "$in_txt" | sed '/^\s*$/d' | \
-            awk '
-              {
-                line=$0
-                # Уже wildcard/+. или . — оставляем, иначе префиксуем +.
+                # если уже wildcard (*...), уже с +. или . — оставляем (и . тоже оставляем как осознанный выбор)
                 if (!(line ~ /^\*/ || line ~ /^\+\./ || line ~ /^\./) && !(line ~ /\//)) {
                   line = "+." line
                 }
                 gsub(/"/, "\\\"", line)
                 print "  - \"" line "\""
-              }
-            ' >> "$out_yaml"
+              }'
           }
 
-          make_yaml_plain() {
-            local in_txt="$1"
-            local out_yaml="$2"
-            echo "payload:" > "$out_yaml"
-            sed 's/\r$//' "$in_txt" | sed '/^\s*$/d' | \
-            awk '{gsub(/"/,"\\\""); print "  - \"" $0 "\"" }' >> "$out_yaml"
+          yaml_from_plain_stream() {
+            echo "payload:"
+            sed 's/\r$//' | sed '/^\s*$/d' | \
+            awk '{gsub(/"/,"\\\""); print "  - \"" $0 "\"" }'
           }
 
-          for f in dist/mrs/domain/*.txt; do
-            [[ -s "$f" ]] || continue
-            make_yaml_domains "$f" "dist/yaml/domain/$(basename "${f%.txt}").yaml"
+          # ========== По сайтам ==========
+          for path in "${SITES[@]}"; do
+            group="${path%%/*}"
+            site="${path##*/}"
+
+            # domains → YAML
+            curl -fsSL "$base/?format=text&data=domains&site=$site" \
+              | yaml_from_domains_stream \
+              > "dist/yaml/domain/${group}--${site}.yaml" || true
+
+            # cidr → YAML
+            { curl -fsSL "$base/?format=text&data=cidr4&site=$site"; echo; curl -fsSL "$base/?format=text&data=cidr6&site=$site"; } \
+              | yaml_from_plain_stream \
+              > "dist/yaml/ipcidr/${group}--${site}.yaml" || true
           done
 
-          for f in dist/mrs/ipcidr/*.txt; do
-            [[ -s "$f" ]] || continue
-            make_yaml_plain "$f" "dist/yaml/ipcidr/$(basename "${f%.txt}").yaml"
+          # ========== По группам (категории) ==========
+          for g in "${GROUPS[@]}"; do
+            curl -fsSL "$base/?format=text&data=domains&group=$g" \
+              | yaml_from_domains_stream \
+              > "dist/yaml/domain/${g}.yaml" || true
+
+            { curl -fsSL "$base/?format=text&data=cidr4&group=$g"; echo; curl -fsSL "$base/?format=text&data=cidr6&group=$g"; } \
+              | yaml_from_plain_stream \
+              > "dist/yaml/ipcidr/${g}.yaml" || true
           done
+
+          # ========== ALL (суммарные YAML из групп) ==========
+          # Домены ALL: склеиваем групповые domain-*.yaml → в payload оставляем уникальные строки
+          {
+            echo "payload:"
+            # вытащим все элементы payload из групповых YAML, исключим site-level (*--*.yaml), uniq/sort
+            awk '/^payload:/{p=1;next} p && /^  - /{print $0}' dist/yaml/domain/*.yaml \
+              | grep -v -- '--' \
+              | LC_ALL=C sort -u
+          } > dist/yaml/domain/all.yaml || true
+
+          # CIDR ALL
+          {
+            echo "payload:"
+            awk '/^payload:/{p=1;next} p && /^  - /{print $0}' dist/yaml/ipcidr/*.yaml \
+              | grep -v -- '--' \
+              | LC_ALL=C sort -u
+          } > dist/yaml/ipcidr/all.yaml || true
+
+          echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
+
+      # ===== Компиляция YAML → .mrs =====
+      - name: Compile YAML to .mrs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shopt -s nullglob
+          mkdir -p dist/mrs/domain dist/mrs/ipcidr
+
+          convert_yaml_dir() {
+            local behavior="$1"   # domain | ipcidr
+            local src_dir="$2"    # dist/yaml/domain | dist/yaml/ipcidr
+            local dst_dir="$3"    # dist/mrs/domain  | dist/mrs/ipcidr
+            local count=0
+            for f in "$src_dir"/*.yaml; do
+              # пустые payload тоже возможны — пропустим
+              if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
+                echo "[skip] empty payload: $f"
+                continue
+              fi
+              mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$(basename "${f%.yaml}").mrs"
+              echo "[ok] $behavior: $dst_dir/$(basename "${f%.yaml}").mrs"
+              ((count++)) || true
+            done
+            echo "[summary] $behavior compiled: $count files"
+          }
+
+          convert_yaml_dir domain dist/yaml/domain dist/mrs/domain
+          convert_yaml_dir ipcidr dist/yaml/ipcidr dist/mrs/ipcidr
 
       - name: Stop iplist
         if: always()
@@ -273,11 +250,11 @@ jobs:
         with:
           name: rulesets
           path: |
-            dist/mrs
             dist/yaml
+            dist/mrs
 
       # ===== Коммит результатов в репозиторий =====
-      - name: Commit .mrs and .yaml
+      - name: Commit YAML and MRS
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -286,7 +263,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           shopt -s nullglob
-          files=(dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml)
+          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
 
           if (( ${#files[@]} == 0 )); then
             echo "No files to commit."
