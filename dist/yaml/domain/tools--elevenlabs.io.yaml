@@ -1,0 +1,10 @@
+payload:
+  - "+.api.elevenlabs.io"
+  - "+.api.us.elevenlabs.io"
+  - "+.eleven-public-cdn.elevenlabs.io"
+  - "+.elevenlabs.io"
+  - "+.help.elevenlabs.io"
+  - "+.payload.elevenlabs.io"
+  - "+.try.elevenlabs.io"
+  - "+.us-central1-xi-labs.cloudfunctions.net"
+  - "+.www.elevenlabs.io"

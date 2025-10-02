@@ -1,0 +1,4 @@
+payload:
+  - "+.holod.global.ssl.fastly.net"
+  - "+.holod.media"
+  - "+.www.holod.media"

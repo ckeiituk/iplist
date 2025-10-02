@@ -1,0 +1,13 @@
+payload:
+  - "+.assets.production.linktr.ee"
+  - "+.auth.linktr.ee"
+  - "+.edge.website.production.linktr.ee"
+  - "+.graph.linktr.ee"
+  - "+.ingress.linktr.ee"
+  - "+.linktr.ee"
+  - "+.mfe-appearance.production.linktr.ee"
+  - "+.mfe-grow.production.linktr.ee"
+  - "+.mfe-mk-editor.production.linktr.ee"
+  - "+.mfe-onboarding.production.linktr.ee"
+  - "+.ugc.production.linktr.ee"
+  - "+.www.linktr.ee"

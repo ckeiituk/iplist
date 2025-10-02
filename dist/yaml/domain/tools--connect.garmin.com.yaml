@@ -1,0 +1,7 @@
+payload:
+  - "+.api.gcs.garmin.com"
+  - "+.connect.garmin.com"
+  - "+.connectapi.garmin.com"
+  - "+.ghs.connect.garmin.com"
+  - "+.kc3.connect.garmin.com"
+  - "+.omt.garmin.com"

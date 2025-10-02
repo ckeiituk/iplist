@@ -1,0 +1,7 @@
+payload:
+  - "+.agent.dept.one"
+  - "+.ctf.dept.one"
+  - "+.dept.one"
+  - "+.mta-sts.dept.one"
+  - "+.www.agent.dept.one"
+  - "+.www.dept.one"
