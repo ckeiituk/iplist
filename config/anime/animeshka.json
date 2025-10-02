@@ -1,7 +1,9 @@
 {
     "domains": [
         "animeshka.net",
-        "www.animeshka.net"
+        "www.animeshka.net",
+        "animeshka.online",
+        "www.animeshka.online"
     ],
     "dns": [
         "127.0.0.11:53",
