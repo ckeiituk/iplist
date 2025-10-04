@@ -1,0 +1,18 @@
+name: Fork Sync
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fork Sync
+        uses: tgymnich/fork-sync@v2.0.10
+        with:
+          owner: rekryt
+          repo: iplist
+          base: master
+          head: master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
