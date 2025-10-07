@@ -1,0 +1,24 @@
+{
+    "domains": [
+        "temp-mail.org",
+        "www.temp-mail.org"
+    ],
+    "dns": [
+        "ns1.temp-mail.org:53",
+        "ns2.temp-mail.org:53",
+        "8.8.8.8:53",
+        "1.1.1.1:53"
+    ],
+    "timeout": 60,
+    "ip4": [],
+    "ip6": [],
+    "cidr4": [],
+    "cidr6": [],
+    "external": {
+        "domains": [],
+        "ip4": [],
+        "ip6": [],
+        "cidr4": [],
+        "cidr6": []
+    }
+}
