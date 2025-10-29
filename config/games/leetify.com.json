@@ -1,10 +1,9 @@
 {
     "domains": [
         "leetify.com",
-        "www.leetify.com",
-        "api.leetify.com",
-        "cdn.leetify.com",
-        "static.leetify.com"
+        "api.cs-prod.leetify.com",
+        "id.i-prod.leetify.com",
+        "tracking-api.i-prod.leetify.com"
     ],
     "dns": [
         "127.0.0.11:53",

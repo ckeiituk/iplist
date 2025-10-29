@@ -1,6 +1,6 @@
 {
     "domains": [
-        "cswatch.in"
+        "static.cloudflareinsights.com"
     ],
     "dns": [
         "127.0.0.11:53",
