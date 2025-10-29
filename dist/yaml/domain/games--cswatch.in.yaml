@@ -1,6 +1,2 @@
 payload:
-  - "+.api.cswatch.in"
-  - "+.cdn.cswatch.in"
   - "+.cswatch.in"
-  - "+.static.cswatch.in"
-  - "+.www.cswatch.in"

@@ -1,6 +1,5 @@
 payload:
-  - "+.api.leetify.com"
-  - "+.cdn.leetify.com"
+  - "+.api.cs-prod.leetify.com"
+  - "+.id.i-prod.leetify.com"
   - "+.leetify.com"
-  - "+.static.leetify.com"
-  - "+.www.leetify.com"
+  - "+.tracking-api.i-prod.leetify.com"
