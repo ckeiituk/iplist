@@ -2,11 +2,11 @@
     "domains": [
         "api.wandb.ai",
         "app.wandb.ai",
-        "cdn.wandb.ai",
+        "community.wandb.ai",
         "docs.wandb.ai",
-        "registry.wandb.ai",
+        "trace.wandb.ai",
         "wandb.ai",
-        "www.wandb.ai"
+        "weave.wandb.ai"
     ],
     "dns": [
         "127.0.0.11:53",
