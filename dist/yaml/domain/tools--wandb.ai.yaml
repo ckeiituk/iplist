@@ -1,0 +1,8 @@
+payload:
+  - "+.api.wandb.ai"
+  - "+.app.wandb.ai"
+  - "+.cdn.wandb.ai"
+  - "+.docs.wandb.ai"
+  - "+.registry.wandb.ai"
+  - "+.wandb.ai"
+  - "+.www.wandb.ai"
