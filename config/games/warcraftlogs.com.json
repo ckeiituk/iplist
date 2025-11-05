@@ -1,7 +1,9 @@
 {
     "domains": [
         "warcraftlogs.com",
-        "www.warcraftlogs.com"
+        "www.warcraftlogs.com",
+        "rpglogs.com",
+        "ad-delivery.net"
     ],
     "dns": [
         "127.0.0.11:53",
