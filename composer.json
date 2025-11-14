@@ -8,7 +8,6 @@
     ],
     "require": {
         "opencck/server": "v1.0.0",
-        "amphp/http": "^2.1.1",
         "amphp/dns": "^2.2",
         "vlucas/phpdotenv": "^5.5",
         "amphp/file": "^3.1",
@@ -28,6 +27,9 @@
     "config": {
         "allow-plugins": {
             "php-http/discovery": true
+        },
+        "audit": {
+            "ignore": ["PKSA-2y5x-qmr9-33nv"]
         }
     }
 }
