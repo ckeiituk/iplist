@@ -64,7 +64,7 @@ jobs:
             vendor-${{ runner.os }}-
 
       - name: Install PHP deps
-        run: composer install --no-interaction --prefer-dist --no-progress
+        run: composer install --no-interaction --prefer-dist --no-progress --no-audit
 
       # ===== Go + mihomo =====
       - name: Setup Go
