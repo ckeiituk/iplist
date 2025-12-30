@@ -7,12 +7,16 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Fork Sync
-        uses: tgymnich/fork-sync@v2.0.10
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          owner: rekryt
-          repo: iplist
-          base: master
-          head: master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Sync fork with upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/rekryt/iplist.git
+          git fetch upstream
+          git merge upstream/master --allow-unrelated-histories || echo "Merge conflicts or already up to date"
+          git push origin master || echo "Nothing to push or push failed"
