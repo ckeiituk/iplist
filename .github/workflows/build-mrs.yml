@@ -2,7 +2,7 @@ name: Build YAML (source) → MRS from iplist
 
 on:
   schedule:
-    - cron: "15 */6 * * *"   # каждые 6 часов (UTC)
+    - cron: "15 */6 * * *"
   workflow_dispatch: {}
   push:
     branches:
@@ -11,6 +11,7 @@ on:
       - "config/**"
       - "src/**"
       - ".github/workflows/build-mrs.yml"
+      - ".github/scripts/generate_yaml.py"
 
 permissions:
   contents: write
@@ -23,51 +24,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # Куда кладём go-бинарники/модули (чтобы кэшировать)
       GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
-      # Зафиксированная версия mihomo (стабильность сборки)
       MIHOMO_VERSION: v1.19.14
-      # Composer — без интерактива, без аудита
-      COMPOSER_PROCESS_TIMEOUT: 0
-      COMPOSER_NO_INTERACTION: 1
-      COMPOSER_NO_AUDIT: 1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ===== PHP + Composer =====
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+      # Only setup Go + Actions cache (PHP not needed for Python script unless we omitted something?)
+      # Wait, user project IS PHP project. 'src' dir exists. 
+      # But if we use Python for generation, we might NOT need PHP at all for this workflow?
+      # Does mihomo need PHP? No.
+      # Does commit need PHP? No.
+      # Does the user rely on 'composer install' for something else?
+      # The previous workflow installed PHP deps.
+      # If we skip them, we are fine.
+      
+      # Removing PHP setup massively speeds up setup too!
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          php-version: '8.2'
-          coverage: none
-          tools: composer
-          extensions: curl, json
-
-      - name: Get Composer cache dir
-        id: composer-cache-dir
-        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
-
-      - name: Restore Composer cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.composer-cache-dir.outputs.dir }}
-          key: composer-cache-${{ runner.os }}-
-          restore-keys: |
-            composer-cache-${{ runner.os }}-
-
-      - name: Restore vendor cache
-        uses: actions/cache@v4
-        with:
-          path: vendor
-          key: vendor-${{ runner.os }}-
-          restore-keys: |
-            vendor-${{ runner.os }}-
-
-      - name: Install PHP deps
-        run: composer install --no-interaction --prefer-dist --no-progress
+          python-version: '3.x'
 
       # ===== Go + mihomo =====
       - name: Setup Go
@@ -96,157 +75,39 @@ jobs:
           if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
             echo "mihomo cached"
           else
-            # ВАЖНО: модульный путь — в нижнем регистре
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
           mihomo -v || true
 
-      # ===== iplist HTTP =====
-      - name: Start iplist HTTP server
-        run: |
-          php index.php > server.log 2>&1 &
-          echo $! > iplist.pid
+      # ===== Генерация YAML (Python) =====
+      - name: Generate YAML sources (Python)
+        run: python3 .github/scripts/generate_yaml.py
 
-      - name: Wait for iplist to be ready
-        run: |
-          for i in {1..60}; do
-            if curl -sf "http://127.0.0.1:8080/?format=json" >/dev/null; then
-              echo "iplist is ready"; exit 0
-            fi
-            sleep 1
-          done
-          echo "iplist service is not responding" >&2
-          echo "--- server.log (tail) ---"
-          tail -n 200 server.log || true
-          exit 1
-
-      # ===== Генерация YAML (source) напрямую из iplist =====
-      - name: Generate YAML sources (per-site, per-group, all)
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p dist/yaml/domain dist/yaml/ipcidr
-
-          # Сайты: config/<group>/<site>.json
-          declare -a SITES=()
-          while IFS= read -r -d '' f; do
-            group="$(basename "$(dirname "$f")")"
-            site="$(basename "$f" .json)"
-            SITES+=("$group/$site")
-          done < <(find config -type f -name '*.json' -print0)
-
-          # Группы (категории): каталоги первого уровня
-          declare -a GROUPS=()
-          while IFS= read -r -d '' d; do
-            GROUPS+=("$(basename "$d")")
-          done < <(find config -mindepth 1 -maxdepth 1 -type d -print0)
-
-          base="http://127.0.0.1:8080"
-
-          # ========== Вспомогалки ==========
-          # Нормализуем домены к семантике "+." (root + subdomains)
-          yaml_from_domains_stream() {
-            echo "payload:"
-            sed 's/\r$//' | sed '/^\s*$/d' | \
-            awk '
-              {
-                line=$0
-                # если уже wildcard (*...), уже с +. или . — оставляем (и . тоже оставляем как осознанный выбор)
-                if (!(line ~ /^\*/ || line ~ /^\+\./ || line ~ /^\./) && !(line ~ /\//)) {
-                  line = "+." line
-                }
-                gsub(/"/, "\\\"", line)
-                print "  - \"" line "\""
-              }'
-          }
-
-          yaml_from_plain_stream() {
-            echo "payload:"
-            sed 's/\r$//' | sed '/^\s*$/d' | \
-            awk '{gsub(/"/,"\\\""); print "  - \"" $0 "\"" }'
-          }
-
-          # ========== По сайтам ==========
-          for path in "${SITES[@]}"; do
-            group="${path%%/*}"
-            site="${path##*/}"
-
-            # domains → YAML
-            curl -fsSL "$base/?format=text&data=domains&site=$site" \
-              | yaml_from_domains_stream \
-              > "dist/yaml/domain/${group}--${site}.yaml" || true
-
-            # cidr → YAML
-            { curl -fsSL "$base/?format=text&data=cidr4&site=$site"; echo; curl -fsSL "$base/?format=text&data=cidr6&site=$site"; } \
-              | yaml_from_plain_stream \
-              > "dist/yaml/ipcidr/${group}--${site}.yaml" || true
-          done
-
-          # ========== По группам (категории) ==========
-          for g in "${GROUPS[@]}"; do
-            curl -fsSL "$base/?format=text&data=domains&group=$g" \
-              | yaml_from_domains_stream \
-              > "dist/yaml/domain/${g}.yaml" || true
-
-            { curl -fsSL "$base/?format=text&data=cidr4&group=$g"; echo; curl -fsSL "$base/?format=text&data=cidr6&group=$g"; } \
-              | yaml_from_plain_stream \
-              > "dist/yaml/ipcidr/${g}.yaml" || true
-          done
-
-          # ========== ALL (суммарные YAML из групп) ==========
-          # Домены ALL: склеиваем групповые domain-*.yaml → в payload оставляем уникальные строки
-          {
-            echo "payload:"
-            # вытащим все элементы payload из групповых YAML, исключим site-level (*--*.yaml), uniq/sort
-            awk '/^payload:/{p=1;next} p && /^  - /{print $0}' dist/yaml/domain/*.yaml \
-              | grep -v -- '--' \
-              | LC_ALL=C sort -u
-          } > dist/yaml/domain/all.yaml || true
-
-          # CIDR ALL
-          {
-            echo "payload:"
-            awk '/^payload:/{p=1;next} p && /^  - /{print $0}' dist/yaml/ipcidr/*.yaml \
-              | grep -v -- '--' \
-              | LC_ALL=C sort -u
-          } > dist/yaml/ipcidr/all.yaml || true
-
-          echo "sites=${#SITES[@]} groups=${#GROUPS[@]}"
-
-      # ===== Компиляция YAML → .mrs =====
-      - name: Compile YAML to .mrs
+      # ===== Компиляция YAML → .mrs (Parallel) =====
+      - name: Compile YAML to .mrs (Parallel)
         shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
-
+          
           process_file() {
-            local f="$1"
-            local behavior="$2"
-            local dst_dir="$3"
-            
-            # Check for empty payload
-            if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
-              echo "[skip] empty payload: $f"
-              return
-            fi
-            
-            local name
-            name=$(basename "${f%.yaml}")
-            mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$name.mrs"
-            echo "[ok] $behavior: $name.mrs"
+             local f="$1"
+             local behavior="$2"
+             local dst_dir="$3"
+             if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
+               echo "[skip] empty payload: $f"
+               return
+             fi
+             local name
+             name=$(basename "${f%.yaml}")
+             mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$name.mrs"
+             echo "[ok] $behavior: $name.mrs"
           }
           export -f process_file
-
-          # Parallel execution
+          
           find dist/yaml/domain -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' domain dist/mrs/domain"
           find dist/yaml/ipcidr -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' ipcidr dist/mrs/ipcidr"
-
-      - name: Stop iplist
-        if: always()
-        run: |
-          kill $(cat iplist.pid) || true
 
       # ===== Публикация артефактов =====
       - name: Upload artifacts
@@ -257,7 +118,7 @@ jobs:
             dist/yaml
             dist/mrs
 
-      # ===== Коммит результатов в репозиторий =====
+      # ===== Коммит результатов =====
       - name: Commit YAML and MRS
         shell: bash
         run: |
@@ -274,7 +135,6 @@ jobs:
             exit 0
           fi
 
-          # dist обычно в .gitignore — добавляем принудительно только нужные расширения
           git add -f "${files[@]}"
 
           if git diff --cached --quiet; then
