@@ -4,9 +4,12 @@ on:
   schedule:
     - cron: "15 */6 * * *"
   workflow_dispatch: {}
+  pull_request:
+    branches: [master]
   push:
     branches:
       - master
+      - "feature/**"
     paths:
       - "config/**"
       - "src/**"
