@@ -5,15 +5,18 @@ on:
     - cron: "15 */6 * * *"   # каждые 6 часов (UTC)
   workflow_dispatch: {}
   push:
+    branches:
+      - master
     paths:
       - "config/**"
+      - "src/**"
       - ".github/workflows/build-mrs.yml"
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-mrs-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -277,5 +280,6 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "chore(rulesets): rebuild on $(date -u +%F:%T) UTC"
+            git pull --rebase --autostash origin master
             git push
           fi
