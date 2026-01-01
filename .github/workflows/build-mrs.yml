@@ -77,8 +77,8 @@ jobs:
       - name: Generate YAML sources (Python)
         run: python3 .github/scripts/generate_yaml.py
 
-      # ===== Компиляция YAML → .mrs =====
-      - name: Compile YAML to .mrs
+      # ===== Компиляция YAML → .mrs (инкрементальная) =====
+      - name: Compile YAML to .mrs (incremental)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -90,17 +90,31 @@ jobs:
             local src_dir="$2"    # dist/yaml/domain | dist/yaml/ipcidr
             local dst_dir="$3"    # dist/mrs/domain  | dist/mrs/ipcidr
             local count=0
+            local skipped=0
+            
             for f in "$src_dir"/*.yaml; do
-              # пустые payload тоже возможны — пропустим
+              local name
+              name=$(basename "${f%.yaml}")
+              local mrs_file="$dst_dir/$name.mrs"
+              
+              # Инкрементальная проверка: пропускаем если MRS новее YAML
+              if [[ -f "$mrs_file" && "$mrs_file" -nt "$f" ]]; then
+                ((skipped++)) || true
+                continue
+              fi
+              
+              # Проверка на пустой payload
               if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
                 echo "[skip] empty payload: $f"
                 continue
               fi
-              mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$(basename "${f%.yaml}").mrs" || true
-              echo "[ok] $behavior: $dst_dir/$(basename "${f%.yaml}").mrs"
+              
+              mihomo convert-ruleset "$behavior" yaml "$f" "$mrs_file" || true
+              echo "[ok] $behavior: $name.mrs"
               ((count++)) || true
             done
-            echo "[summary] $behavior compiled: $count files"
+            
+            echo "[summary] $behavior: compiled=$count, skipped=$skipped (up-to-date)"
           }
 
           convert_yaml_dir domain dist/yaml/domain dist/mrs/domain
