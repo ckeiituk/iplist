@@ -94,11 +94,22 @@ def process_config(config_path):
 def write_yaml(path, items):
     if not items: return
     sorted_items = sorted(items)
+    
+    # Build new content
+    lines = ["payload:\n"]
+    for item in sorted_items:
+        lines.append(f'  - "{item}"\n')
+    new_content = "".join(lines)
+    
+    # Only write if content differs (preserves timestamp for incremental MRS build)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            existing = f.read()
+        if existing == new_content:
+            return  # No change, keep original timestamp
+    
     with open(path, "w") as f:
-        f.write("payload:\n")
-        for item in sorted_items:
-            # Escape quotes? simpler just print
-            f.write(f'  - "{item}"\n')
+        f.write(new_content)
 
 def main():
     os.makedirs(f"{DIST_DIR}/domain", exist_ok=True)
