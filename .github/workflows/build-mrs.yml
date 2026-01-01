@@ -53,31 +53,25 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 1.23.x
-          cache: true
+          cache: false  # No go.sum in repo, cache handled manually
 
-      - name: Restore Go bin cache (mihomo)
+      - name: Restore mihomo binary cache
+        id: mihomo-cache
         uses: actions/cache@v4
         with:
-          path: .cache/go/bin
-          key: go-bin-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
-
-      - name: Restore Go mod cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/go/pkg/mod
-          key: go-mod-${{ runner.os }}-mihomo-${{ env.MIHOMO_VERSION }}
-          restore-keys: |
-            go-mod-${{ runner.os }}-
+          path: .cache/go/bin/mihomo
+          key: mihomo-${{ runner.os }}-${{ env.MIHOMO_VERSION }}
 
       - name: Install mihomo (ruleset converter)
         run: |
+          mkdir -p "$GOBIN"
           echo "$GOBIN" >> $GITHUB_PATH
-          if command -v mihomo >/dev/null 2>&1 && mihomo -v | grep -q "${MIHOMO_VERSION#v}"; then
+          if [[ -f "$GOBIN/mihomo" ]]; then
             echo "mihomo cached"
           else
             go install github.com/metacubex/mihomo@${MIHOMO_VERSION}
           fi
-          mihomo -v || true
+          "$GOBIN/mihomo" -v || true
 
       # ===== Генерация YAML (Python) =====
       - name: Generate YAML sources (Python)
