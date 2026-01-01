@@ -11,7 +11,7 @@ on:
       - "config/**"
       - "src/**"
       - ".github/workflows/build-mrs.yml"
-      - ".github/scripts/generate_yaml.py"
+      - ".github/scripts/generate_yaml.go"
 
 permissions:
   contents: write
