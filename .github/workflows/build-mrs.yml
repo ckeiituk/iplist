@@ -83,8 +83,8 @@ jobs:
       - name: Generate YAML sources (Python)
         run: python3 .github/scripts/generate_yaml.py
 
-      # ===== Компиляция YAML → .mrs (Parallel) =====
-      - name: Compile YAML to .mrs (Parallel)
+      # ===== Компиляция YAML → .mrs (только bundle-файлы) =====
+      - name: Compile YAML to .mrs (bundles only)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -106,8 +106,9 @@ jobs:
           }
           export -f process_file
           
-          find dist/yaml/domain -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' domain dist/mrs/domain"
-          find dist/yaml/ipcidr -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' ipcidr dist/mrs/ipcidr"
+          # Compile only bundle files (exclude per-site files containing '--')
+          find dist/yaml/domain -maxdepth 1 -name "*.yaml" ! -name "*--*" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' domain dist/mrs/domain"
+          find dist/yaml/ipcidr -maxdepth 1 -name "*.yaml" ! -name "*--*" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' ipcidr dist/mrs/ipcidr"
 
       # ===== Публикация артефактов =====
       - name: Upload artifacts
@@ -128,7 +129,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           shopt -s nullglob
-          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
+          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml)
+          # For MRS, only bundle files (not per-site)
+          for mrs_file in dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs; do
+            [[ -f "$mrs_file" ]] && files+=("$mrs_file")
+          done
 
           if (( ${#files[@]} == 0 )); then
             echo "No files to commit."
