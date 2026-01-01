@@ -162,7 +162,7 @@ func normalizeIP(line string) string {
 
 // === Config Processing ===
 
-type Config EXTERNAL struct {
+type Config struct {
 	Domains []string          `json:"domains"`
 	IP4     []string          `json:"ip4"`
 	IP6     []string          `json:"ip6"`
