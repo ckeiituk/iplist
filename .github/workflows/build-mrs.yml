@@ -43,11 +43,6 @@ jobs:
       
       # Removing PHP setup massively speeds up setup too!
       
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
       # ===== Go + mihomo =====
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -73,9 +68,18 @@ jobs:
           fi
           "$GOBIN/mihomo" -v || true
 
-      # ===== Генерация YAML (Python) =====
-      - name: Generate YAML sources (Python)
-        run: python3 .github/scripts/generate_yaml.py
+      # ===== Caching External Lists =====
+      - name: Cache external lists
+        uses: actions/cache@v4
+        with:
+          path: .cache/external
+          key: external-lists-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            external-lists-${{ runner.os }}-
+
+      # ===== Генерация YAML (Go) =====
+      - name: Generate YAML sources (Go)
+        run: go run .github/scripts/generate_yaml.go
 
       # ===== Компиляция YAML → .mrs (параллельная + инкрементальная) =====
       - name: Compile YAML to .mrs (parallel + incremental)
