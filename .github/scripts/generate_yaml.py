@@ -35,7 +35,18 @@ def normalize_ip(line):
     line = line.replace('"', '')
     if not line or line.startswith('#'):
         return None
-    return line
+    
+    # If already has CIDR mask, return as-is
+    if '/' in line:
+        return line
+    
+    # Add CIDR mask for bare IPs
+    if ':' in line:
+        # IPv6 - add /128
+        return f"{line}/128"
+    else:
+        # IPv4 - add /32
+        return f"{line}/32"
 
 def process_config(config_path):
     try:
