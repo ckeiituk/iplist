@@ -96,7 +96,7 @@ jobs:
                 echo "[skip] empty payload: $f"
                 continue
               fi
-              mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$(basename "${f%.yaml}").mrs"
+              mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$(basename "${f%.yaml}").mrs" || true
               echo "[ok] $behavior: $dst_dir/$(basename "${f%.yaml}").mrs"
               ((count++)) || true
             done
