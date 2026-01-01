@@ -77,32 +77,34 @@ jobs:
       - name: Generate YAML sources (Python)
         run: python3 .github/scripts/generate_yaml.py
 
-      # ===== Компиляция YAML → .mrs (только bundle-файлы) =====
-      - name: Compile YAML to .mrs (bundles only)
+      # ===== Компиляция YAML → .mrs =====
+      - name: Compile YAML to .mrs
         shell: bash
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
           mkdir -p dist/mrs/domain dist/mrs/ipcidr
-          
-          process_file() {
-             local f="$1"
-             local behavior="$2"
-             local dst_dir="$3"
-             if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
-               echo "[skip] empty payload: $f"
-               return
-             fi
-             local name
-             name=$(basename "${f%.yaml}")
-             mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$name.mrs"
-             echo "[ok] $behavior: $name.mrs"
+
+          convert_yaml_dir() {
+            local behavior="$1"   # domain | ipcidr
+            local src_dir="$2"    # dist/yaml/domain | dist/yaml/ipcidr
+            local dst_dir="$3"    # dist/mrs/domain  | dist/mrs/ipcidr
+            local count=0
+            for f in "$src_dir"/*.yaml; do
+              # пустые payload тоже возможны — пропустим
+              if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
+                echo "[skip] empty payload: $f"
+                continue
+              fi
+              mihomo convert-ruleset "$behavior" yaml "$f" "$dst_dir/$(basename "${f%.yaml}").mrs"
+              echo "[ok] $behavior: $dst_dir/$(basename "${f%.yaml}").mrs"
+              ((count++)) || true
+            done
+            echo "[summary] $behavior compiled: $count files"
           }
-          export -f process_file
-          
-          # Compile only bundle files (exclude per-site files containing '--')
-          find dist/yaml/domain -maxdepth 1 -name "*.yaml" ! -name "*--*" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' domain dist/mrs/domain"
-          find dist/yaml/ipcidr -maxdepth 1 -name "*.yaml" ! -name "*--*" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' ipcidr dist/mrs/ipcidr"
+
+          convert_yaml_dir domain dist/yaml/domain dist/mrs/domain
+          convert_yaml_dir ipcidr dist/yaml/ipcidr dist/mrs/ipcidr
 
       # ===== Публикация артефактов =====
       - name: Upload artifacts
@@ -123,11 +125,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           shopt -s nullglob
-          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml)
-          # For MRS, only bundle files (not per-site)
-          for mrs_file in dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs; do
-            [[ -f "$mrs_file" ]] && files+=("$mrs_file")
-          done
+          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
 
           if (( ${#files[@]} == 0 )); then
             echo "No files to commit."
