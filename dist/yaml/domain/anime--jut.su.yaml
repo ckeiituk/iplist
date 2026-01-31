@@ -1,8 +1,5 @@
 payload:
-  - "+.doton.jut.su"
-  - "+.gen.jut.su"
   - "+.jut.su"
-  - "+.katon.jut.su"
   - "+.r100104.yandexwebcache.org"
   - "+.r100201.yandexwebcache.org"
   - "+.r100205.yandexwebcache.org"
@@ -416,4 +413,3 @@ payload:
   - "+.r812140.yandexwebcache.org"
   - "+.r8201.yandexwebcache.org"
   - "+.r999100.yandexwebcache.org"
-  - "+.www.jut.su"

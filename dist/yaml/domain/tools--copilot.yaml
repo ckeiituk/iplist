@@ -2,7 +2,6 @@ payload:
   - "+.acctcdnmsftuswe2.azureedge.net"
   - "+.acctcdnvzeuno.azureedge.net"
   - "+.api.github.com"
-  - "+.api.githubcopilot.com"
   - "+.browser.events.data.microsoft.com"
   - "+.cdn.sapphire.microsoftapp.net"
   - "+.copilot-proxy.githubusercontent.com"

@@ -1,7 +1,5 @@
 payload:
-  - "+.auth.beeg.com"
   - "+.beeg.com"
-  - "+.go.stripchat.beeg.com"
   - "+.previews.externulls.com"
   - "+.search.externulls.com"
   - "+.stats.externulls.com"
@@ -9,4 +7,3 @@ payload:
   - "+.thumbs.externulls.com"
   - "+.video.externulls.com"
   - "+.vp.externulls.com"
-  - "+.www.beeg.com"

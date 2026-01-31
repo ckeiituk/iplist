@@ -1,5 +1,2 @@
 payload:
   - "+.currenttime.tv"
-  - "+.ssc.currenttime.tv"
-  - "+.tags.currenttime.tv"
-  - "+.www.currenttime.tv"

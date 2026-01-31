@@ -1,8 +1,2 @@
 payload:
-  - "+.api.wandb.ai"
-  - "+.app.wandb.ai"
-  - "+.community.wandb.ai"
-  - "+.docs.wandb.ai"
-  - "+.trace.wandb.ai"
   - "+.wandb.ai"
-  - "+.weave.wandb.ai"

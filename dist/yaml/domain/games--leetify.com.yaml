@@ -1,5 +1,2 @@
 payload:
-  - "+.api.cs-prod.leetify.com"
-  - "+.id.i-prod.leetify.com"
   - "+.leetify.com"
-  - "+.tracking-api.i-prod.leetify.com"
