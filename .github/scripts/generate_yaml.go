@@ -143,6 +143,49 @@ func normalizeDomain(line string) string {
 	return line
 }
 
+func suffixHost(pattern string) string {
+	if strings.HasPrefix(pattern, "+.") {
+		return pattern[2:]
+	}
+	if strings.HasPrefix(pattern, ".") {
+		return pattern[1:]
+	}
+	return ""
+}
+
+func pruneSubdomains(domSet map[string]bool) {
+	suffixHosts := make(map[string]bool)
+	for item := range domSet {
+		if host := suffixHost(item); host != "" {
+			suffixHosts[host] = true
+		}
+	}
+	if len(suffixHosts) == 0 {
+		return
+	}
+
+	redundantHosts := make(map[string]bool)
+	for host := range suffixHosts {
+		parts := strings.Split(host, ".")
+		for i := 1; i < len(parts); i++ {
+			parent := strings.Join(parts[i:], ".")
+			if suffixHosts[parent] {
+				redundantHosts[host] = true
+				break
+			}
+		}
+	}
+	if len(redundantHosts) == 0 {
+		return
+	}
+
+	for item := range domSet {
+		if host := suffixHost(item); host != "" && redundantHosts[host] {
+			delete(domSet, item)
+		}
+	}
+}
+
 func normalizeIP(line string) string {
 	line = strings.TrimSpace(line)
 	line = strings.ReplaceAll(line, "\"", "")
@@ -227,6 +270,7 @@ func processConfig(path string) (*Result, error) {
 			domSet[n] = true
 		}
 	}
+	pruneSubdomains(domSet)
 
 	ipSet := make(map[string]bool)
 	for _, i := range ips {

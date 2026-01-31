@@ -30,6 +30,38 @@ def normalize_domain(line):
         return "+." + line
     return line
 
+def _suffix_host(pattern):
+    if pattern.startswith('+.'):
+        return pattern[2:]
+    if pattern.startswith('.'):
+        return pattern[1:]
+    return None
+
+def prune_subdomains(domains):
+    # Drop redundant subdomains when a broader domain-suffix entry exists (e.g. +.example.com -> +.www.example.com).
+    suffix_hosts = set()
+    for item in domains:
+        host = _suffix_host(item)
+        if host:
+            suffix_hosts.add(host)
+
+    if not suffix_hosts:
+        return domains
+
+    redundant_hosts = set()
+    for host in suffix_hosts:
+        parts = host.split('.')
+        for i in range(1, len(parts)):
+            parent = '.'.join(parts[i:])
+            if parent in suffix_hosts:
+                redundant_hosts.add(host)
+                break
+
+    if not redundant_hosts:
+        return domains
+
+    return {item for item in domains if _suffix_host(item) not in redundant_hosts}
+
 def normalize_ip(line):
     line = line.strip()
     line = line.replace('"', '')
@@ -89,6 +121,7 @@ def process_config(config_path):
     for d in domains:
         n = normalize_domain(str(d))
         if n: norm_domains.add(n)
+    norm_domains = prune_subdomains(norm_domains)
         
     norm_ips = set()
     for i in ip_list:
