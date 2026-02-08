@@ -1,0 +1,5 @@
+payload:
+  - "+.api.gcs.garmin.com"
+  - "+.connect.garmin.com"
+  - "+.connectapi.garmin.com"
+  - "+.omt.garmin.com"
