@@ -12,6 +12,7 @@ on:
       - "src/**"
       - ".github/workflows/build-mrs.yml"
       - ".github/scripts/generate_yaml.go"
+      - ".github/scripts/dedupe_yaml.go"
 
 permissions:
   contents: write
@@ -27,6 +28,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.cache/go/bin
       GOPATH: ${{ github.workspace }}/.cache/go
       MIHOMO_VERSION: v1.19.14
+      DEDUP_RULE_URL: https://raw.githubusercontent.com/legiz-ru/mihomo-rule-sets/main/ru-bundle/rule.yaml
 
     steps:
       - name: Checkout
@@ -87,7 +89,6 @@ jobs:
         run: |
           set -Eeuo pipefail
           shopt -s nullglob
-          mkdir -p dist/mrs/domain dist/mrs/ipcidr
 
           process_file() {
              local f="$1"
@@ -98,15 +99,16 @@ jobs:
              name=$(basename "${f%.yaml}")
              local mrs_file="$dst_dir/$name.mrs"
              
-             # Инкрементальная проверка: пропускаем если MRS новее YAML
-             if [[ -f "$mrs_file" && "$mrs_file" -nt "$f" ]]; then
-               # echo "[skip] up-to-date: $name.mrs"
+             # Проверка на пустой payload
+             if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
+               rm -f "$mrs_file"
+               echo "[skip] empty payload: $f"
                return
              fi
 
-             # Проверка на пустой payload
-             if ! awk '/^  - /{found=1; exit} END{exit found?0:1}' "$f"; then
-               echo "[skip] empty payload: $f"
+             # Инкрементальная проверка: пропускаем если MRS новее YAML
+             if [[ -f "$mrs_file" && "$mrs_file" -nt "$f" ]]; then
+               # echo "[skip] up-to-date: $name.mrs"
                return
              fi
              
@@ -114,10 +116,54 @@ jobs:
              echo "[ok] $behavior: $name.mrs"
           }
           export -f process_file
+
+          prune_mrs() {
+            local src="$1"
+            local dst="$2"
+
+            if [[ ! -d "$dst" ]]; then
+              return
+            fi
+
+            find "$dst" -name "*.mrs" -print0 | while IFS= read -r -d '' f; do
+              local name
+              name="$(basename "${f%.mrs}")"
+              local kind
+              kind="$(basename "$(dirname "$f")")"
+              local yaml="$src/$kind/$name.yaml"
+              if [[ ! -f "$yaml" ]]; then
+                rm -f "$f"
+              fi
+            done
+          }
           
+          compile_rulesets() {
+            local src="$1"
+            local dst="$2"
+
+            mkdir -p "$dst/domain" "$dst/ipcidr"
+
+            if [[ -d "$src/domain" ]]; then
+              find "$src/domain" -name "*.yaml" -print0 | xargs -0 -P "$(nproc)" -I {} bash -c 'process_file "$1" domain "$2"' _ {} "$dst/domain"
+            fi
+            if [[ -d "$src/ipcidr" ]]; then
+              find "$src/ipcidr" -name "*.yaml" -print0 | xargs -0 -P "$(nproc)" -I {} bash -c 'process_file "$1" ipcidr "$2"' _ {} "$dst/ipcidr"
+            fi
+          }
+
           echo "Starting parallel compilation..."
-          find dist/yaml/domain -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' domain dist/mrs/domain"
-          find dist/yaml/ipcidr -name "*.yaml" -print0 | xargs -0 -P $(nproc) -I {} bash -c "process_file '{}' ipcidr dist/mrs/ipcidr"
+          prune_mrs dist/yaml dist/mrs
+          compile_rulesets dist/yaml dist/mrs &
+          pid_main=$!
+
+          (
+            go run .github/scripts/dedupe_yaml.go -src dist/yaml -dst dist/yaml-dedup -external-url "$DEDUP_RULE_URL"
+            prune_mrs dist/yaml-dedup dist/mrs-dedup
+            compile_rulesets dist/yaml-dedup dist/mrs-dedup
+          ) &
+          pid_dedup=$!
+
+          wait "$pid_main" "$pid_dedup"
           echo "Compilation finished."
 
       # ===== Публикация артефактов =====
@@ -128,6 +174,8 @@ jobs:
           path: |
             dist/yaml
             dist/mrs
+            dist/yaml-dedup
+            dist/mrs-dedup
 
       # ===== Коммит результатов =====
       - name: Commit YAML and MRS
@@ -139,7 +187,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           shopt -s nullglob
-          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs)
+          files=(dist/yaml/domain/*.yaml dist/yaml/ipcidr/*.yaml dist/yaml-dedup/domain/*.yaml dist/yaml-dedup/ipcidr/*.yaml dist/mrs/domain/*.mrs dist/mrs/ipcidr/*.mrs dist/mrs-dedup/domain/*.mrs dist/mrs-dedup/ipcidr/*.mrs)
 
           if (( ${#files[@]} == 0 )); then
             echo "No files to commit."
