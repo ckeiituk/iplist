@@ -124,6 +124,7 @@ payload:
   - "+.sentry.dev"
   - "+.sentry.io"
   - "+.services.bingapis.com"
+  - "+.sherlock-report.at"
   - "+.static.intercomassets.com"
   - "+.static.naukimg.com"
   - "+.status.x.ai"
