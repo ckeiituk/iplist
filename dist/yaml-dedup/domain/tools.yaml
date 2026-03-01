@@ -85,6 +85,7 @@ payload:
   - "+.us-central1-xi-labs.cloudfunctions.net"
   - "+.vdsina.com"
   - "+.wandb.ai"
+  - "+.wanderersguide.app"
   - "+.whoop.com"
   - "+.widget.intercom.io"
   - "+.www.intercom.io"
