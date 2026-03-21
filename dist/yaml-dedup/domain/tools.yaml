@@ -14,6 +14,7 @@ payload:
   - "+.browser-intake-datadoghq.com"
   - "+.cdn.cplx.app"
   - "+.cdn.sapphire.microsoftapp.net"
+  - "+.claude.com"
   - "+.claudeusercontent.com"
   - "+.cloudcore.plus"
   - "+.connect.garmin.com"

@@ -26,6 +26,7 @@ payload:
   - "+.cdn.sapphire.microsoftapp.net"
   - "+.chatgpt.com"
   - "+.claude.ai"
+  - "+.claude.com"
   - "+.claudeusercontent.com"
   - "+.cloudcore.plus"
   - "+.connect.garmin.com"

@@ -235,6 +235,7 @@ payload:
   - "+.cisco.telegram.com"
   - "+.citigroup.telegram.com"
   - "+.citrix.telegram.com"
+  - "+.claude.com"
   - "+.claudeusercontent.com"
   - "+.clicks.telegram.com"
   - "+.clients.telegram.com"
