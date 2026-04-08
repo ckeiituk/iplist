@@ -1,10 +1,4 @@
 payload:
-  - "+.api-iam.intercom.io"
   - "+.claudeusercontent.com"
-  - "+.downloads.intercomcdn.com"
   - "+.js.intercomcdn.com"
-  - "+.messenger-apps.intercom.io"
-  - "+.nexus-websocket-a.intercom.io"
   - "+.static.intercomassets.com"
-  - "+.widget.intercom.io"
-  - "+.www.intercom.io"
